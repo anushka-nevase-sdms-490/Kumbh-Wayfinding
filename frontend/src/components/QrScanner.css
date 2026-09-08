@@ -1,0 +1,143 @@
+.qr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(12, 22, 20, 0.78);
+  display: grid;
+  place-items: end center;
+  padding: 16px;
+}
+
+.qr-sheet {
+  width: min(520px, 100%);
+  max-height: min(92vh, 900px);
+  overflow: auto;
+  background: #f4f0e8;
+  border-radius: 24px 24px 18px 18px;
+  padding: 20px;
+  animation: rise 0.35s ease both;
+  color: #14201c;
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.qr-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.qr-top h2 {
+  margin: 0;
+  font-family: "Bricolage Grotesque", Figtree, system-ui, sans-serif;
+  font-size: 1.35rem;
+}
+
+.qr-help,
+.qr-status {
+  color: #4d5a55;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.qr-box {
+  border-radius: 16px;
+  overflow: hidden;
+  background: #1a2421;
+  min-height: 180px;
+}
+
+.qr-error {
+  color: #9a3b28;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.qr-demo-label {
+  margin: 16px 0 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5a6862;
+}
+
+.qr-demo-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.qr-demo-btn {
+  text-align: left;
+  border: 1px solid rgba(20, 32, 28, 0.12);
+  background: #fff;
+  border-radius: 14px;
+  padding: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.qr-demo-btn:hover {
+  border-color: #1a5f5a;
+}
+
+.qr-demo-btn strong {
+  font-size: 0.92rem;
+}
+
+.qr-demo-btn span {
+  font-size: 0.75rem;
+  color: #5a6862;
+  font-family: ui-monospace, monospace;
+}
+
+.qr-status.ok {
+  color: #1a5f5a;
+  font-weight: 600;
+}
+
+.btn-retry {
+  width: 100%;
+  margin: 8px 0 4px;
+  border: 1px solid #1a5f5a55;
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.qr-manual {
+  display: flex;
+  gap: 8px;
+}
+
+.qr-manual input {
+  flex: 1;
+  border: 1px solid rgba(20, 32, 28, 0.15);
+  border-radius: 12px;
+  padding: 12px;
+  font: inherit;
+}
+
+.ghost {
+  border: 1px solid #1f6f6a66;
+  background: transparent;
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-weight: 600;
+}

@@ -1,0 +1,503 @@
+:root {
+  --ink: #14201c;
+  --river: #1a5f5a;
+  --river-deep: #0f3a37;
+  --ember: #d86a2f;
+  --sand: #efe6d6;
+  --foam: #f7f3ea;
+  --mute: #5a6862;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: Figtree, system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--foam);
+}
+
+button {
+  font: inherit;
+}
+
+.app {
+  position: relative;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.atmosphere {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 90% 55% at 15% -5%, #c8ddd6 0%, transparent 55%),
+    radial-gradient(ellipse 70% 45% at 100% 5%, #e8c9a8 0%, transparent 50%),
+    linear-gradient(165deg, #f6f1e7 0%, #e4ece7 48%, #d5e3de 100%);
+}
+
+.atmosphere::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.18;
+  background-image: repeating-linear-gradient(
+      -18deg,
+      transparent 0 14px,
+      rgba(20, 32, 28, 0.04) 14px 15px
+    ),
+    repeating-linear-gradient(
+      72deg,
+      transparent 0 22px,
+      rgba(26, 95, 90, 0.05) 22px 23px
+    );
+}
+
+.screen {
+  position: relative;
+  z-index: 1;
+  min-height: 100dvh;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 24px 20px 32px;
+  display: flex;
+  flex-direction: column;
+}
+
+.boot {
+  min-height: 100dvh;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  text-align: center;
+  background: var(--foam);
+}
+
+.boot-mark {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-size: 2.5rem;
+  font-weight: 800;
+  color: var(--river);
+}
+
+/* —— Home —— */
+.home {
+  justify-content: space-between;
+  animation: fade-up 0.55s ease both;
+}
+
+.home-top {
+  padding-top: 8vh;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--mute);
+}
+
+.brand {
+  margin: 0;
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-size: clamp(2.4rem, 11vw, 3.6rem);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.lead {
+  margin: 18px 0 0;
+  max-width: 28ch;
+  font-size: 1.08rem;
+  line-height: 1.45;
+  color: #2d3b36;
+}
+
+.home-visual {
+  display: grid;
+  place-items: center;
+  position: relative;
+  margin: 12px 0 8px;
+  animation: floaty 4.5s ease-in-out infinite;
+}
+
+.path-glow {
+  position: absolute;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(216, 106, 47, 0.28), transparent 68%);
+  filter: blur(2px);
+}
+
+.home-cta {
+  display: grid;
+  gap: 10px;
+}
+
+.fine {
+  margin: 0;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--mute);
+}
+
+/* —— Shared controls —— */
+.btn {
+  border: none;
+  border-radius: 16px;
+  padding: 16px 20px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn.primary {
+  background: var(--river);
+  color: #f7f3ea;
+  box-shadow: 0 12px 28px rgba(26, 95, 90, 0.28);
+}
+
+.btn.secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1.5px solid rgba(26, 95, 90, 0.45);
+}
+
+.btn.soft {
+  background: rgba(247, 243, 234, 0.14);
+  color: #f7f3ea;
+  border: 1px solid rgba(247, 243, 234, 0.28);
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+}
+
+.btn.block {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.topbar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.topbar h2 {
+  margin: 0;
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-size: 1.55rem;
+  letter-spacing: -0.02em;
+}
+
+.topbar p {
+  margin: 4px 0 0;
+  color: var(--mute);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.topbar.light h2,
+.topbar.light .back {
+  color: #f7f3ea;
+}
+
+.topbar.light p {
+  color: rgba(247, 243, 234, 0.72);
+}
+
+.back {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid rgba(20, 32, 28, 0.12);
+  background: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+
+.topbar.light .back {
+  border-color: rgba(247, 243, 234, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.section-label {
+  margin: 18px 0 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+
+.section-label.light {
+  color: rgba(247, 243, 234, 0.55);
+}
+
+.flow {
+  animation: fade-up 0.35s ease both;
+}
+
+.place-list {
+  display: grid;
+  gap: 8px;
+  overflow: auto;
+  padding-bottom: 12px;
+}
+
+.place {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+  border: 1px solid rgba(20, 32, 28, 0.08);
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 16px;
+  padding: 14px;
+  cursor: pointer;
+}
+
+.place.active,
+.place:hover {
+  border-color: rgba(26, 95, 90, 0.45);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.place strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.place small {
+  color: var(--mute);
+}
+
+.place-mark {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: #dceae6;
+  color: var(--river);
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.start-chip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: rgba(26, 95, 90, 0.1);
+  border-radius: 14px;
+  padding: 12px 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.start-chip button {
+  border: none;
+  background: transparent;
+  color: var(--river);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dest-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  overflow: auto;
+  padding-bottom: 16px;
+}
+
+.dest {
+  border: 1px solid rgba(20, 32, 28, 0.08);
+  background: rgba(255, 255, 255, 0.58);
+  border-radius: 18px;
+  padding: 16px 14px;
+  text-align: left;
+  cursor: pointer;
+  min-height: 128px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.dest:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: rgba(216, 106, 47, 0.45);
+}
+
+.dest:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.dest-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: #ead7c4;
+  color: #8a3f18;
+  font-weight: 800;
+}
+
+.dest strong {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-size: 1.02rem;
+  letter-spacing: -0.01em;
+}
+
+.dest small {
+  color: var(--mute);
+  line-height: 1.3;
+}
+
+/* —— Guide —— */
+.guide {
+  max-width: none;
+  background: linear-gradient(180deg, var(--river) 0%, var(--river-deep) 55%, #0a2422 100%);
+  color: #f7f3ea;
+  animation: fade-up 0.35s ease both;
+}
+
+.guide-stage {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  padding: 8px 0 18px;
+}
+
+.follow {
+  margin: 0;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  font-weight: 700;
+  opacity: 0.75;
+}
+
+.next-line {
+  margin: 4px 0 0;
+  font-size: 1.05rem;
+}
+
+.sensor-line {
+  margin: 0;
+  font-size: 0.8rem;
+  opacity: 0.65;
+}
+
+.route-panel {
+  margin-top: auto;
+  background: rgba(8, 24, 22, 0.45);
+  border: 1px solid rgba(247, 243, 234, 0.12);
+  border-radius: 22px;
+  padding: 16px;
+  backdrop-filter: blur(8px);
+}
+
+.route-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.route-steps li {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.route-steps .dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--ember);
+  box-shadow: 0 0 0 4px rgba(216, 106, 47, 0.2);
+  flex-shrink: 0;
+}
+
+.route-steps strong {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.route-steps small {
+  opacity: 0.65;
+}
+
+.guide-actions {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.empty-route {
+  margin: auto 0;
+  text-align: center;
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes floaty {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@media (min-width: 720px) {
+  .screen:not(.guide) {
+    padding-top: 40px;
+  }
+
+  .home-top {
+    padding-top: 12vh;
+  }
+}

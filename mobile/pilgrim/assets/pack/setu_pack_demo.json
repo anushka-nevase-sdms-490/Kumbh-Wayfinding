@@ -1,0 +1,29 @@
+{
+  "version": "vDEMO001",
+  "generated_at": "2026-09-07T00:00:00Z",
+  "signature": "demo-unsigned",
+  "nodes": [
+    {"id": 1, "code": "SETU-A01", "name": "Ram Kund Ghat", "lat": 19.9975, "lon": 73.7898, "node_type": "ghat", "icon": "ghat"},
+    {"id": 2, "code": "SETU-A02", "name": "Junction East", "lat": 19.9978, "lon": 73.7902, "node_type": "junction", "icon": "junction"},
+    {"id": 3, "code": "SETU-A03", "name": "Medical Camp", "lat": 19.9981, "lon": 73.7905, "node_type": "medical", "icon": "medical"},
+    {"id": 4, "code": "SETU-B01", "name": "Toilet Block A", "lat": 19.9972, "lon": 73.7901, "node_type": "toilet", "icon": "toilet"},
+    {"id": 5, "code": "SETU-B02", "name": "Help Desk", "lat": 19.9976, "lon": 73.7906, "node_type": "help", "icon": "help"},
+    {"id": 6, "code": "SETU-C01", "name": "Parking P1", "lat": 19.9969, "lon": 73.7895, "node_type": "parking", "icon": "parking"},
+    {"id": 7, "code": "SETU-C02", "name": "Lost & Found", "lat": 19.9980, "lon": 73.7896, "node_type": "lost_found", "icon": "lost_found"},
+    {"id": 8, "code": "SETU-D01", "name": "Bus Stand", "lat": 19.9968, "lon": 73.7904, "node_type": "transport", "icon": "transport"}
+  ],
+  "edges": [
+    {"id": 1, "from_code": "SETU-A01", "to_code": "SETU-A02", "distance_m": 52.0, "surface": "paved", "walkable": true, "bidirectional": true},
+    {"id": 2, "from_code": "SETU-A02", "to_code": "SETU-A03", "distance_m": 48.0, "surface": "paved", "walkable": true, "bidirectional": true},
+    {"id": 3, "from_code": "SETU-A01", "to_code": "SETU-B01", "distance_m": 45.0, "surface": "sand", "walkable": true, "bidirectional": true},
+    {"id": 4, "from_code": "SETU-B01", "to_code": "SETU-B02", "distance_m": 55.0, "surface": "paved", "walkable": true, "bidirectional": true},
+    {"id": 5, "from_code": "SETU-A02", "to_code": "SETU-B02", "distance_m": 50.0, "surface": "paved", "walkable": true, "bidirectional": true},
+    {"id": 6, "from_code": "SETU-A03", "to_code": "SETU-C02", "distance_m": 42.0, "surface": "paved", "walkable": true, "bidirectional": true},
+    {"id": 7, "from_code": "SETU-A01", "to_code": "SETU-C02", "distance_m": 58.0, "surface": "paved", "walkable": true, "bidirectional": true},
+    {"id": 8, "from_code": "SETU-C01", "to_code": "SETU-A01", "distance_m": 60.0, "surface": "paved", "walkable": true, "bidirectional": true},
+    {"id": 9, "from_code": "SETU-C01", "to_code": "SETU-B01", "distance_m": 55.0, "surface": "sand", "walkable": true, "bidirectional": true},
+    {"id": 10, "from_code": "SETU-B01", "to_code": "SETU-D01", "distance_m": 50.0, "surface": "paved", "walkable": true, "bidirectional": true},
+    {"id": 11, "from_code": "SETU-B02", "to_code": "SETU-D01", "distance_m": 48.0, "surface": "steps", "walkable": true, "bidirectional": true},
+    {"id": 12, "from_code": "SETU-A02", "to_code": "SETU-C02", "distance_m": 40.0, "surface": "paved", "walkable": true, "bidirectional": true}
+  ]
+}

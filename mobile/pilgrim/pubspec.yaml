@@ -1,0 +1,30 @@
+name: setu_pilgrim
+description: Setu offline wayfinding — pilgrim app (gyroscope PDR)
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.7.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  sensors_plus: ^6.1.1
+  mobile_scanner: ^6.0.2
+  http: ^1.2.2
+  path_provider: ^2.1.5
+  shared_preferences: ^2.3.3
+  provider: ^6.1.2
+  vector_math: ^2.1.4
+  qr_flutter: ^4.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/pack/setu_pack_demo.json
