@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { QrScanner } from "./components/QrScanner";
 import { BoardQrGallery } from "./components/BoardQrGallery";
 import { DirectionArrow } from "./components/DirectionArrow";
+import { ArGuide } from "./components/ArGuide";
 import { useDeviceHeading } from "./hooks/useDeviceHeading";
 import { findRoute, edgeBetween } from "./lib/router";
 import {
@@ -28,6 +29,9 @@ export default function App() {
   const [dest, setDest] = useState<QrNode | null>(null);
   const [showScanner, setShowScanner] = useState(false);
   const [scanTarget, setScanTarget] = useState<"start" | "reanchor">("start");
+  // Camera view is the point of the product; the dial is the fallback for
+  // laptops and for phones that refuse camera access.
+  const [guideView, setGuideView] = useState<"camera" | "compass">("camera");
   const heading = useDeviceHeading();
 
   useEffect(() => {
@@ -73,6 +77,11 @@ export default function App() {
   }, [pack, start, dest]);
 
   const nextNode = route?.nodes[1] ?? dest;
+  const arrived = !!route && route.nodes.length <= 1;
+  const legDistanceM =
+    route && route.codes.length > 1
+      ? (edgeBetween(pack.edges, route.codes[0], route.codes[1])?.distance_m ?? 0)
+      : 0;
   const bearingToNext =
     start && nextNode
       ? bearingDeg(start.lat, start.lon, nextNode.lat, nextNode.lon)
@@ -93,6 +102,17 @@ export default function App() {
       if (scanTarget === "start") setStep("destination");
     },
     [pack, scanTarget]
+  );
+
+  const handleArScan = useCallback(
+    (code: string) => {
+      const node = pack.nodes.find(
+        (n) => n.code.toUpperCase() === normalizeCode(code)
+      );
+      // A stray QR in the scene is not an error worth interrupting the walk.
+      if (node) setStart(node);
+    },
+    [pack]
   );
 
   const demoCodes = useMemo(
@@ -235,7 +255,23 @@ export default function App() {
         </section>
       )}
 
-      {step === "guide" && start && dest && route && (
+      {step === "guide" && start && dest && route && guideView === "camera" && (
+        <ArGuide
+          arrowDeg={arrowDeg}
+          nextName={nextNode?.name ?? dest.name}
+          distanceM={legDistanceM}
+          destName={dest.name}
+          arrived={arrived}
+          sensorLive={heading.live}
+          sensorNote={heading.note}
+          onScan={handleArScan}
+          onNudge={heading.nudge}
+          onExit={() => setStep("destination")}
+          onUseCompass={() => setGuideView("compass")}
+        />
+      )}
+
+      {step === "guide" && start && dest && route && guideView === "compass" && (
         <section className="screen guide">
           <TopBar
             title={dest.name}
@@ -310,6 +346,13 @@ export default function App() {
                 </ol>
 
                 <div className="guide-actions">
+                  <button
+                    type="button"
+                    className="btn soft"
+                    onClick={() => setGuideView("camera")}
+                  >
+                    Camera view
+                  </button>
                   <button
                     type="button"
                     className="btn soft"

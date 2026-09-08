@@ -49,14 +49,24 @@ You are lost on the mela ground. Choose how you mark your place:
 ### Screen 3 — Where to? (destination)
 Click where you want to go, e.g. **Medical Camp** or **Toilet Block A**
 
-### Screen 4 — Guide
-You will see:
-- a **big orange arrow** → walk that way
-- **Next:** the next QR board on the path
-- a **route list** (board → board on man-made paths)
-- buttons: **Rescan board**, **Turn left**, **Turn right**
+### Screen 4 — Guide (camera)
+The camera opens and stays on for the whole walk. Over the live view you see:
 
-On a laptop, sensors may not move the arrow — use **Turn left / Turn right**.
+- a big instruction: **Go straight / Bear left / Turn right / Turn around**
+- an **orange arrow painted on the ground** pointing the way to walk
+- the destination and **metres to go** at the top
+- the **next board** you are walking towards
+
+The camera keeps watching for QR boards while you walk. When a board comes
+into view it is read automatically and your position jumps to it — no tapping.
+When you reach the destination board you get a green **You have arrived**.
+
+Allow the camera when the browser asks. If you block it, or you are on a
+laptop, tap **Compass view** for the old dial with **Turn left / Turn right**
+buttons.
+
+Note: the camera and the motion sensors only work over **https** — `start.sh`
+sets that up for you.
 
 ---
 

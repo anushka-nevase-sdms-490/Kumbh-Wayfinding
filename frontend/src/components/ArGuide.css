@@ -1,0 +1,238 @@
+.ar {
+  position: fixed;
+  inset: 0;
+  background: #05100d;
+  overflow: hidden;
+  z-index: 40;
+}
+
+/* html5-qrcode injects its own <video>; make it fill the screen. */
+.ar-cam,
+.ar-cam video {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover;
+}
+
+.ar-cam img,
+.ar-cam canvas {
+  display: none !important;
+}
+
+.ar-boot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #F4F0E8;
+  font-size: 0.95rem;
+  text-align: center;
+  max-width: 18rem;
+  line-height: 1.5;
+  z-index: 2;
+}
+
+.ar-boot.error {
+  color: #FFC9A8;
+}
+
+.ar-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top, 0.75rem) 1rem 1rem;
+  color: #F4F0E8;
+  /* Legible over any camera scene, without hiding it. */
+  background: linear-gradient(
+    to bottom,
+    rgba(5, 22, 18, 0.78) 0%,
+    rgba(5, 22, 18, 0.12) 28%,
+    rgba(5, 22, 18, 0.12) 58%,
+    rgba(5, 22, 18, 0.82) 100%
+  );
+  pointer-events: none;
+}
+
+.ar-overlay button {
+  pointer-events: auto;
+}
+
+.ar-top {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-top: 0.75rem;
+}
+
+.ar-back {
+  flex: none;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.9rem;
+  border: 1px solid rgba(244, 240, 232, 0.25);
+  background: rgba(5, 22, 18, 0.5);
+  color: #F4F0E8;
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+
+.ar-dest {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.ar-dest strong {
+  font-size: 1.15rem;
+}
+
+.ar-dest span {
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.ar-banner {
+  margin: 1rem auto 0;
+  padding: 0.6rem 1.25rem;
+  border-radius: 1rem;
+  background: rgba(5, 22, 18, 0.62);
+  border: 1px solid rgba(240, 160, 90, 0.5);
+  text-align: center;
+  backdrop-filter: blur(6px);
+}
+
+.ar-banner.straight {
+  border-color: rgba(126, 217, 163, 0.6);
+}
+
+.ar-instruction {
+  margin: 0;
+  font-size: 1.9rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.ar-detail {
+  margin: 0.15rem 0 0;
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+
+/* The ground plane the arrow lies on. */
+.ar-ground {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  perspective: 460px;
+  perspective-origin: 50% 0%;
+  padding-bottom: 1.5rem;
+}
+
+/* Tilting the plane (not the arrow) keeps the rotation maths simple: the
+   arrow spins flat in its own plane, and the plane is laid down towards the
+   horizon so the arrow reads as painted on the ground ahead of you. */
+.ar-plane {
+  transform: rotateX(62deg);
+  transform-style: preserve-3d;
+  transform-origin: 50% 100%;
+}
+
+.ar-arrow {
+  display: block;
+  width: min(62vw, 280px);
+  height: auto;
+  transform-origin: 50% 72%;
+  transition: transform 140ms linear;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.6));
+}
+
+.ar-next {
+  margin: 0 0 0.5rem;
+  text-align: center;
+  font-size: 0.95rem;
+  opacity: 0.9;
+}
+
+.ar-arrived {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  text-align: center;
+}
+
+.ar-arrived-mark {
+  width: 5rem;
+  height: 5rem;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 2.5rem;
+  background: rgba(126, 217, 163, 0.2);
+  border: 2px solid #7ED9A3;
+  color: #7ED9A3;
+}
+
+.ar-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ar-sensor {
+  margin: 0;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.ar-nudge {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.ar-nudge button {
+  padding: 0.65rem 1.1rem;
+  border-radius: 0.9rem;
+  border: 1px solid rgba(244, 240, 232, 0.25);
+  background: rgba(5, 22, 18, 0.55);
+  color: #F4F0E8;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ar-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  opacity: 0.6;
+  text-align: center;
+}
+
+.ar-switch {
+  margin-top: 0.75rem;
+  padding: 0.6rem 1.1rem;
+  border-radius: 0.9rem;
+  border: 1px solid rgba(244, 240, 232, 0.3);
+  background: rgba(5, 22, 18, 0.6);
+  color: #F4F0E8;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ar-switch.subtle {
+  margin-top: 0.1rem;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  opacity: 0.75;
+  border-color: rgba(244, 240, 232, 0.18);
+}
