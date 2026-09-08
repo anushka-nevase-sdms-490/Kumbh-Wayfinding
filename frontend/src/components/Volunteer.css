@@ -1,0 +1,218 @@
+.volunteer-screen {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 20px 18px 40px;
+  position: relative;
+  z-index: 1;
+}
+
+.volunteer-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.volunteer-head h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.volunteer-head p {
+  margin: 4px 0 0;
+  color: var(--mute);
+  font-size: 0.9rem;
+}
+
+.volunteer-form {
+  display: grid;
+  gap: 14px;
+}
+
+.volunteer-form label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.volunteer-form input {
+  border: 1px solid rgba(20, 32, 28, 0.18);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #fff;
+  font: inherit;
+}
+
+.coord-block {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(26, 95, 90, 0.08);
+  border: 1px solid rgba(26, 95, 90, 0.15);
+  display: grid;
+  gap: 10px;
+}
+
+.coord-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.gps-status {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--mute);
+}
+
+.gps-status.ok {
+  color: var(--river-deep);
+  font-weight: 600;
+}
+
+.gps-status.err {
+  color: #a33;
+  font-weight: 600;
+}
+
+.volunteer-card {
+  padding: 22px 18px;
+  border-radius: 20px;
+  background: #fff;
+  border: 1px solid rgba(20, 32, 28, 0.1);
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  text-align: center;
+}
+
+.volunteer-card.warn {
+  border-color: rgba(168, 90, 20, 0.35);
+  background: #fff8f0;
+}
+
+.volunteer-card.success {
+  border-color: rgba(26, 95, 90, 0.25);
+}
+
+.volunteer-meta {
+  margin: 0;
+  text-align: left;
+  width: 100%;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.volunteer-qr-print {
+  padding: 16px;
+  background: #fff;
+  border-radius: 12px;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+
+.print-title {
+  margin: 8px 0 0;
+  font-weight: 800;
+  font-size: 1.15rem;
+}
+
+.print-sub {
+  margin: 0;
+  color: var(--mute);
+  font-size: 0.9rem;
+}
+
+.print-hint {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.volunteer-actions {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.gate-cta {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 360px);
+  margin: 0 auto;
+}
+
+.volunteer-home-simple {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  min-height: 70vh;
+  position: relative;
+}
+
+.volunteer-home-simple .home-top {
+  text-align: center;
+  margin: 0;
+  position: relative;
+  width: min(100%, 360px);
+  padding-top: 3rem;
+}
+
+.volunteer-home-back {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: none;
+}
+
+.volunteer-access-qr {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.volunteer-gutter {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.4;
+  color: var(--mute);
+  max-width: 22ch;
+}
+
+.volunteer-phone-url {
+  margin: 0;
+  max-width: 34ch;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  word-break: break-all;
+  color: var(--ink, #14201c);
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #volunteer-print-area,
+  #volunteer-print-area * {
+    visibility: visible;
+  }
+  #volunteer-print-area {
+    position: absolute;
+    left: 50%;
+    top: 40px;
+    transform: translateX(-50%);
+  }
+  .no-print {
+    display: none !important;
+  }
+}

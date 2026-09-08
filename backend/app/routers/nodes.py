@@ -14,13 +14,19 @@ def list_nodes(db: Session = Depends(get_db)):
 
 @router.post("/nodes", response_model=QrNodeOut)
 def create_node(body: QrNodeCreate, db: Session = Depends(get_db)):
+    """Create a node. Duplicate code → 409 (no silent overwrite)."""
+    body.code = body.code.upper()
     existing = db.query(QrNode).filter(QrNode.code == body.code).first()
     if existing:
-        for k, v in body.model_dump().items():
-            setattr(existing, k, v)
-        db.commit()
-        db.refresh(existing)
-        return existing
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "message": "QR is already registered",
+                "existing_name": existing.name,
+                "code": existing.code,
+            },
+        )
     node = QrNode(**body.model_dump())
     db.add(node)
     db.commit()

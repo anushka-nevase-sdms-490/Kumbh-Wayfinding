@@ -2,10 +2,12 @@ export type QrNode = {
   id: number;
   code: string;
   name: string;
+  local_name?: string | null;
   lat: number;
   lon: number;
   node_type: string;
   icon?: string;
+  description?: string | null;
 };
 
 export type GraphEdge = {
@@ -24,6 +26,48 @@ export type OfflinePack = {
   edges: GraphEdge[];
 };
 
+/** Special QR payload / path segment — opens volunteer registration (not a place node). */
+export const VOLUNTEER_REGISTER_CODE = "VOLUNTEER_REGISTER";
+
+/** Volunteer-registered boards (KUMBH-A01…) — shown to Users; demo SETU-* seed is hidden. */
+export function isRegisteredLocation(node: Pick<QrNode, "code">): boolean {
+  return /^KUMBH-A\d+/i.test(node.code.trim());
+}
+
+/** App origin for phone-scannable QR links (same host the page is on). */
+export function appOrigin(): string {
+  if (typeof window === "undefined") return "";
+  return window.location.origin;
+}
+
+/** Deep link that opens Volunteer registration on the phone browser. */
+export function volunteerRegisterLink(origin = appOrigin()): string {
+  const base = origin.replace(/\/$/, "");
+  return `${base}/?mode=volunteer&register=1`;
+}
+
+/** Deep link for a printed location board (User start). */
+export function locationBoardLink(code: string, origin = appOrigin()): string {
+  const base = origin.replace(/\/$/, "");
+  return `${base}/?board=${encodeURIComponent(code.toUpperCase())}`;
+}
+
+export function isVolunteerRegisterPayload(raw: string): boolean {
+  const n = normalizeCode(raw);
+  if (n === VOLUNTEER_REGISTER_CODE) return true;
+  if (n.includes("MODE=VOLUNTEER") || n.includes("REGISTER=1")) return true;
+  try {
+    if (raw.includes("://")) {
+      const u = new URL(raw.trim());
+      if (u.searchParams.get("mode") === "volunteer") return true;
+      if (u.searchParams.get("register") === "1") return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
 export const TYPE_META: Record<
   string,
   { label: string; emoji: string; hint: string }
@@ -36,13 +80,34 @@ export const TYPE_META: Record<
   transport: { label: "Transport", emoji: "▷", hint: "Bus / rail link" },
   help: { label: "Help desk", emoji: "!", hint: "Ask staff" },
   junction: { label: "Junction", emoji: "·", hint: "Path crossing" },
+  landmark: { label: "Landmark", emoji: "◎", hint: "Registered place" },
 };
 
 export function normalizeCode(raw: string): string {
-  let s = raw.trim().toUpperCase();
+  let s = raw.trim();
+  try {
+    if (/^https?:\/\//i.test(s)) {
+      const u = new URL(s);
+      if (
+        u.searchParams.get("mode") === "volunteer" ||
+        u.searchParams.get("register") === "1"
+      ) {
+        return VOLUNTEER_REGISTER_CODE;
+      }
+      const board = u.searchParams.get("board") || u.searchParams.get("start");
+      if (board) return board.trim().toUpperCase();
+    }
+  } catch {
+    /* fall through */
+  }
+  s = s.toUpperCase();
+  if (s.includes("BOARD=")) {
+    const part = s.split("BOARD=")[1] ?? s;
+    s = part.split("&")[0] ?? part;
+  }
   if (s.includes("/")) s = s.split("/").pop() ?? s;
   if (s.includes("=")) s = s.split("=").pop() ?? s;
-  return s;
+  return s.trim().toUpperCase();
 }
 
 export function haversineM(

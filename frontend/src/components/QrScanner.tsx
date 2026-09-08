@@ -7,11 +7,22 @@ type Props = {
   onScan: (code: string) => void;
   onClose: () => void;
   demoCodes?: { code: string; name: string }[];
+  title?: string;
+  helpText?: string;
+  /** Unique DOM id when multiple scanners exist in the app. */
+  readerId?: string;
+  placeholder?: string;
 };
 
-const READER_ID = "routefinding-qr-reader";
-
-export function QrScanner({ onScan, onClose, demoCodes = [] }: Props) {
+export function QrScanner({
+  onScan,
+  onClose,
+  demoCodes = [],
+  title = "Scan QR board",
+  helpText = "Allow camera when Chrome asks. Point at a Routefinding QR.",
+  readerId = "routefinding-qr-reader",
+  placeholder = "e.g. KUMBH-A01",
+}: Props) {
   const [error, setError] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [manual, setManual] = useState("");
@@ -24,45 +35,38 @@ export function QrScanner({ onScan, onClose, demoCodes = [] }: Props) {
     let scanner: Html5Qrcode | null = null;
 
     const boot = window.setTimeout(async () => {
-      const el = document.getElementById(READER_ID);
+      const el = document.getElementById(readerId);
       if (!el) {
         setError("Scanner box missing. Use a board button below.");
         return;
       }
 
       try {
-        scanner = new Html5Qrcode(READER_ID);
+        scanner = new Html5Qrcode(readerId);
         scannerRef.current = scanner;
 
-        // Prefer back camera; fall back to any camera
+        const onDecoded = (decoded: string) => {
+          if (cancelled) return;
+          cancelled = true;
+          const code = normalizeCode(decoded);
+          scanner
+            ?.stop()
+            .catch(() => undefined)
+            .finally(() => onScanRef.current(code));
+        };
+
         try {
           await scanner.start(
             { facingMode: "environment" },
             { fps: 10, qrbox: { width: 240, height: 240 } },
-            (decoded) => {
-              if (cancelled) return;
-              cancelled = true;
-              const code = normalizeCode(decoded);
-              scanner
-                ?.stop()
-                .catch(() => undefined)
-                .finally(() => onScanRef.current(code));
-            },
+            onDecoded,
             () => undefined
           );
         } catch {
           await scanner.start(
             { facingMode: "user" },
             { fps: 10, qrbox: { width: 240, height: 240 } },
-            (decoded) => {
-              if (cancelled) return;
-              cancelled = true;
-              const code = normalizeCode(decoded);
-              scanner
-                ?.stop()
-                .catch(() => undefined)
-                .finally(() => onScanRef.current(code));
-            },
+            onDecoded,
             () => undefined
           );
         }
@@ -80,8 +84,8 @@ export function QrScanner({ onScan, onClose, demoCodes = [] }: Props) {
         setCameraReady(false);
         setError(
           denied
-            ? "Camera is blocked. Click the camera icon in the Chrome address bar → Allow, then tap Retry. Or use a board button / type a code below."
-            : `Camera failed (${msg}). Use a board button below.`
+            ? "Camera is blocked. Allow camera in the browser, then retry. Or type a code below."
+            : `Camera failed (${msg}). Use a board button / type a code below.`
         );
       }
     }, 150);
@@ -97,7 +101,7 @@ export function QrScanner({ onScan, onClose, demoCodes = [] }: Props) {
           .catch(() => undefined);
       }
     };
-  }, []);
+  }, [readerId]);
 
   function submitManual() {
     const code = normalizeCode(manual);
@@ -106,22 +110,18 @@ export function QrScanner({ onScan, onClose, demoCodes = [] }: Props) {
   }
 
   return (
-    <div className="qr-overlay" role="dialog" aria-label="Scan QR board">
+    <div className="qr-overlay" role="dialog" aria-label={title}>
       <div className="qr-sheet">
         <div className="qr-top">
-          <h2>Scan QR board</h2>
+          <h2>{title}</h2>
           <button type="button" className="ghost" onClick={onClose}>
             Close
           </button>
         </div>
 
-        <p className="qr-help">
-          Allow camera when Chrome asks. Point at a Routefinding QR. If camera
-          is blocked, click the <strong>camera icon</strong> next to the URL →
-          Allow.
-        </p>
+        <p className="qr-help">{helpText}</p>
 
-        <div id={READER_ID} className="qr-box" />
+        <div id={readerId} className="qr-box" />
 
         {cameraReady ? (
           <p className="qr-status ok">Camera on — point at a QR code</p>
@@ -130,21 +130,14 @@ export function QrScanner({ onScan, onClose, demoCodes = [] }: Props) {
         )}
 
         {error && (
-          <button
-            type="button"
-            className="btn-retry"
-            onClick={() => {
-              setError(null);
-              onClose();
-            }}
-          >
-            Close and allow camera, then tap Scan again
+          <button type="button" className="btn-retry" onClick={onClose}>
+            Close and allow camera, then scan again
           </button>
         )}
 
         {demoCodes.length > 0 && (
           <>
-            <p className="qr-demo-label">Or tap a board code</p>
+            <p className="qr-demo-label">Or tap a code</p>
             <div className="qr-demo-grid">
               {demoCodes.map((d) => (
                 <button
@@ -161,12 +154,12 @@ export function QrScanner({ onScan, onClose, demoCodes = [] }: Props) {
           </>
         )}
 
-        <p className="qr-demo-label">Or type board code</p>
+        <p className="qr-demo-label">Or type code</p>
         <div className="qr-manual">
           <input
             value={manual}
             onChange={(e) => setManual(e.target.value)}
-            placeholder="e.g. SETU-A01"
+            placeholder={placeholder}
             onKeyDown={(e) => e.key === "Enter" && submitManual()}
           />
           <button type="button" className="ghost" onClick={submitManual}>

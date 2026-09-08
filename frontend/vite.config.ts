@@ -1,19 +1,42 @@
-import fs from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import fs from "fs";
+import path from "path";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
-// Browsers hand motion sensors and the camera only to a secure context, so a
-// phone on http://<lan-ip>:5173 gets neither. start.sh drops a self-signed
-// cert here; when it exists we serve https and those APIs come alive.
-const keyPath = fileURLToPath(new URL('./.certs/dev-key.pem', import.meta.url))
-const certPath = fileURLToPath(new URL('./.certs/dev-cert.pem', import.meta.url))
-const hasCert = fs.existsSync(keyPath) && fs.existsSync(certPath)
+// Phone GPS needs trusted HTTPS. start.sh sets SETU_HTTP=0 when using TLS.
+const useHttp = process.env.SETU_HTTP === "1";
+const keyPath = path.resolve(".certs/dev-key.pem");
+const certPath = path.resolve(".certs/dev-cert.pem");
+const hasCert = !useHttp && fs.existsSync(keyPath) && fs.existsSync(certPath);
 
-// https://vite.dev/config/
+// Proxy API through Vite so one public HTTPS URL (ngrok) reaches the backend too.
+const backend = hasCert ? "https://127.0.0.1:8000" : "http://127.0.0.1:8000";
+
 export default defineConfig({
   plugins: [react()],
-  server: hasCert
-    ? { https: { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) } }
-    : {},
-})
+  server: {
+    host: true,
+    port: 5173,
+    strictPort: true,
+    proxy: {
+      "/api": {
+        target: backend,
+        changeOrigin: true,
+        secure: false,
+      },
+      "/health": {
+        target: backend,
+        changeOrigin: true,
+        secure: false,
+      },
+    },
+    ...(hasCert
+      ? {
+          https: {
+            key: fs.readFileSync(keyPath),
+            cert: fs.readFileSync(certPath),
+          },
+        }
+      : {}),
+  },
+});

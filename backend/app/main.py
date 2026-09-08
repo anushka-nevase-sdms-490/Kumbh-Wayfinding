@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .db import init_db
-from .routers import nodes, pack
+from .routers import network, nodes, pack, volunteer
 from .seed import seed
 
 
@@ -37,6 +37,8 @@ app.add_middleware(
 
 app.include_router(nodes.router)
 app.include_router(pack.router)
+app.include_router(volunteer.router)
+app.include_router(network.router)
 
 
 @app.get("/health")

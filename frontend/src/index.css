@@ -94,11 +94,25 @@ button {
 /* —— Home —— */
 .home {
   justify-content: space-between;
+  align-items: center;
   animation: fade-up 0.55s ease both;
+  text-align: center;
 }
 
 .home-top {
-  padding-top: 8vh;
+  padding-top: 4.5rem;
+  width: 100%;
+  text-align: center;
+}
+
+.user-home-top {
+  position: relative;
+}
+
+.user-home-back {
+  position: absolute;
+  left: 0;
+  top: 0;
 }
 
 .eyebrow {
@@ -111,28 +125,31 @@ button {
 }
 
 .brand {
-  margin: 0;
+  margin: 0 auto;
   font-family: "Bricolage Grotesque", sans-serif;
   font-size: clamp(2.4rem, 11vw, 3.6rem);
   line-height: 0.95;
   letter-spacing: -0.04em;
   font-weight: 800;
   color: var(--ink);
+  text-align: center;
 }
 
 .lead {
-  margin: 18px 0 0;
+  margin: 18px auto 0;
   max-width: 28ch;
   font-size: 1.08rem;
   line-height: 1.45;
   color: #2d3b36;
+  text-align: center;
 }
 
 .home-visual {
   display: grid;
   place-items: center;
   position: relative;
-  margin: 12px 0 8px;
+  margin: 12px auto 8px;
+  width: 100%;
   animation: floaty 4.5s ease-in-out infinite;
 }
 
@@ -148,6 +165,8 @@ button {
 .home-cta {
   display: grid;
   gap: 10px;
+  width: min(100%, 360px);
+  margin: 0 auto;
 }
 
 .fine {
@@ -498,6 +517,6 @@ button {
   }
 
   .home-top {
-    padding-top: 12vh;
+    padding-top: 5rem;
   }
 }

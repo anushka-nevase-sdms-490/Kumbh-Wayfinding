@@ -27,10 +27,11 @@ class QrNode(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     code = Column(String(32), unique=True, nullable=False, index=True)
     name = Column(String(128), nullable=False)
+    local_name = Column(String(128), nullable=True)
     lat = Column(Float, nullable=False)
     lon = Column(Float, nullable=False)
     node_type = Column(String(32), nullable=False, default="junction")
-    # ghat | parking | medical | lost_found | toilet | transport | junction | help
+    # ghat | parking | medical | lost_found | toilet | transport | junction | help | landmark
     icon = Column(String(32), nullable=True)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -84,6 +85,22 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _ensure_sqlite_columns()
+
+
+def _ensure_sqlite_columns():
+    """Add new columns on existing SQLite files (create_all won't alter)."""
+    if not settings.use_sqlite:
+        return
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(qr_nodes)")).fetchall()
+        names = {r[1] for r in rows}
+        if "local_name" not in names:
+            conn.execute(
+                text("ALTER TABLE qr_nodes ADD COLUMN local_name VARCHAR(128)")
+            )
 
 
 def get_db():
