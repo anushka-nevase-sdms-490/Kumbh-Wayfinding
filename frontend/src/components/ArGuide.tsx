@@ -31,11 +31,11 @@ function instruction(deg: number, nextName: string) {
   const t = signedTurn(deg);
   const side = t < 0 ? "left" : "right";
   const mag = Math.abs(t);
-  if (mag <= 15) return { text: "Go straight", detail: `towards ${nextName}` };
-  if (mag <= 60) return { text: `Bear ${side}`, detail: `then straight on` };
+  if (mag <= 20) return { text: "This way", detail: `GPS bearing to ${nextName}` };
+  if (mag <= 60) return { text: `Turn ${side}`, detail: `about ${Math.round(mag)}° · then walk` };
   if (mag <= 120) return { text: `Turn ${side}`, detail: `${Math.round(mag)}° to your ${side}` };
   if (mag <= 165) return { text: `Sharp ${side}`, detail: `${Math.round(mag)}° to your ${side}` };
-  return { text: "Turn around", detail: "the path is behind you" };
+  return { text: "Turn around", detail: `${nextName} is behind you` };
 }
 
 export function ArGuide(props: Props) {
@@ -113,7 +113,7 @@ export function ArGuide(props: Props) {
 
   const turn = signedTurn(arrowDeg);
   const { text, detail } = instruction(arrowDeg, nextName);
-  const onCourse = Math.abs(turn) <= 15;
+  const onCourse = Math.abs(turn) <= 20;
 
   return (
     <div className="ar">
@@ -199,7 +199,8 @@ export function ArGuide(props: Props) {
             </div>
           )}
           <p className="ar-hint">
-            Point the camera at a board QR to update your position.
+            Arrow follows live GPS toward the next board. Walk around walls or
+            glass — register boards along the real walkable path.
           </p>
           <button type="button" className="ar-switch subtle" onClick={onUseCompass}>
             Compass view

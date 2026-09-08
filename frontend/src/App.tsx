@@ -7,12 +7,14 @@ import { ArGuide } from "./components/ArGuide";
 import { VolunteerRegisterForm } from "./components/VolunteerRegisterForm";
 import "./components/Volunteer.css";
 import { useDeviceHeading } from "./hooks/useDeviceHeading";
+import { useLivePosition } from "./hooks/useLivePosition";
 import { usePhoneAppBase } from "./hooks/usePhoneAppBase";
 import { findRoute, edgeBetween } from "./lib/router";
 import { apiBase } from "./lib/network";
 import {
   TYPE_META,
   bearingDeg,
+  haversineM,
   isRegisteredLocation,
   isVolunteerRegisterPayload,
   normalizeCode,
@@ -130,22 +132,41 @@ export default function App() {
   }, [pack, start, dest]);
 
   const nextNode = route?.nodes[1] ?? dest;
-  // Only "arrived" when start === dest (route is a single node). Empty path is NOT arrived.
-  const arrived =
+  const hasPath = !!route && route.codes.length >= 2;
+  const liveNav = useLivePosition(mode === "user" && step === "guide" && hasPath);
+
+  // Prefer live phone GPS for direction — board-only bearing points through glass/walls.
+  const fromLat = liveNav.pos?.lat ?? start?.lat;
+  const fromLon = liveNav.pos?.lon ?? start?.lon;
+
+  const sameBoardArrive =
     !!route &&
     !!start &&
     !!dest &&
     route.codes.length === 1 &&
     start.code.toUpperCase() === dest.code.toUpperCase();
-  const hasPath = !!route && route.codes.length >= 2;
-  const legDistanceM =
+
+  const gpsArrive =
+    !!liveNav.pos &&
+    !!dest &&
+    haversineM(liveNav.pos.lat, liveNav.pos.lon, dest.lat, dest.lon) <= 8;
+
+  const arrived = sameBoardArrive || gpsArrive;
+
+  const edgeLegM =
     hasPath
-      ? (edgeBetween(pack.edges, route.codes[0], route.codes[1])
-          ?.distance_m ?? 0)
+      ? (edgeBetween(pack.edges, route!.codes[0], route!.codes[1])?.distance_m ??
+        0)
       : 0;
+
+  const legDistanceM =
+    fromLat != null && fromLon != null && nextNode
+      ? haversineM(fromLat, fromLon, nextNode.lat, nextNode.lon)
+      : edgeLegM;
+
   const bearingToNext =
-    start && nextNode
-      ? bearingDeg(start.lat, start.lon, nextNode.lat, nextNode.lon)
+    fromLat != null && fromLon != null && nextNode
+      ? bearingDeg(fromLat, fromLon, nextNode.lat, nextNode.lon)
       : 0;
   const arrowDeg = (bearingToNext - heading.heading + 360) % 360;
 
@@ -478,7 +499,9 @@ export default function App() {
           destName={dest.name}
           arrived={arrived}
           sensorLive={heading.live}
-          sensorNote={heading.note}
+          sensorNote={
+            liveNav.note ? `${heading.note} · ${liveNav.note}` : heading.note
+          }
           onScan={handleArScan}
           onNudge={heading.nudge}
           onExit={() => setStep("destination")}
@@ -502,7 +525,8 @@ export default function App() {
               Next: <strong>{nextNode?.name}</strong>
             </p>
             <p className="sensor-line">
-              {heading.live ? "●" : "○"} {heading.note} ·{" "}
+              {heading.live ? "●" : "○"} {heading.note}
+              {liveNav.note ? ` · ${liveNav.note}` : ""} ·{" "}
               {Math.round(heading.heading)}°
             </p>
           </div>

@@ -48,13 +48,27 @@ export function useDeviceHeading() {
 
   // Read inside event handlers without re-subscribing on every update.
   const sourceRef = useRef<Source>("none");
+  const headingRef = useRef(0);
 
   const publish = useCallback((deg: number, next: Source) => {
     if (RANK[next] < RANK[sourceRef.current]) return;
+    // Soften jumps so the AR arrow does not flicker when sensors are noisy.
+    const incoming = ((deg % 360) + 360) % 360;
+    let smoothed = incoming;
+    if (RANK[next] >= RANK.relative && RANK[sourceRef.current] >= RANK.relative) {
+      const prev = headingRef.current;
+      let delta = incoming - prev;
+      if (delta > 180) delta -= 360;
+      if (delta < -180) delta += 360;
+      if (Math.abs(delta) < 45) {
+        smoothed = (prev + delta * 0.35 + 360) % 360;
+      }
+    }
     sourceRef.current = next;
+    headingRef.current = smoothed;
     setSource(next);
     setNote(LABEL[next]);
-    setHeading(((deg % 360) + 360) % 360);
+    setHeading(smoothed);
   }, []);
 
   useEffect(() => {
@@ -150,9 +164,10 @@ export function useDeviceHeading() {
     // buttons drive the arrow while nothing better is running.
     if (RANK[sourceRef.current] > RANK.manual) return;
     sourceRef.current = "manual";
+    headingRef.current = (headingRef.current + delta + 360) % 360;
     setSource("manual");
     setNote((n) => (n === INSECURE_NOTE || n === NO_SENSOR_NOTE ? n : LABEL.manual));
-    setHeading((h) => (h + delta + 360) % 360);
+    setHeading(headingRef.current);
   }, []);
 
   return {
