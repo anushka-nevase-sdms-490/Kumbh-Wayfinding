@@ -27,3 +27,4 @@ mobile/**/build/
 .env
 *.db
 _archive/
+frontend/.certs/

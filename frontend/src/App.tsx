@@ -15,7 +15,11 @@ import packFallback from "./data/pack.json";
 
 type Step = "home" | "start" | "boards" | "destination" | "guide";
 
-const API = import.meta.env.VITE_SETU_API ?? "http://localhost:8000";
+// Same host the page came from, so a phone on the LAN reaches the PC's
+// backend — and an https page never blocks itself on a mixed-content call.
+const API =
+  import.meta.env.VITE_SETU_API ??
+  `${window.location.protocol}//${window.location.hostname}:8000`;
 
 export default function App() {
   const [pack, setPack] = useState<OfflinePack>(packFallback as OfflinePack);

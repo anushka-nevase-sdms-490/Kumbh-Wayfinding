@@ -1,79 +1,167 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Device heading from browser sensors (gyro / compass). Degrees from north. */
+/**
+ * Device heading from browser sensors (compass / orientation / gyro).
+ * Degrees clockwise from north.
+ *
+ * Browsers only deliver motion sensors to a *secure context* (https, or
+ * localhost). Over plain http on a LAN IP the listeners attach fine and then
+ * never fire — so we detect that up front instead of sitting silently at 0.
+ */
+
+type Source = "none" | "manual" | "gyro" | "relative" | "absolute";
+
+/** Higher wins: a coarse source must never clobber a better one. */
+const RANK: Record<Source, number> = {
+  none: 0,
+  manual: 1,
+  gyro: 2,
+  relative: 3,
+  absolute: 4,
+};
+
+const LABEL: Record<Source, string> = {
+  none: "Waiting for sensors",
+  manual: "Manual heading",
+  gyro: "Gyroscope tracking",
+  relative: "Device orientation",
+  absolute: "Compass heading",
+};
+
+const INSECURE_NOTE = "Needs https for sensors — use Turn buttons";
+const NO_SENSOR_NOTE = "No compass on this device — use Turn buttons";
+
+/** Screen rotation, so the arrow stays right when the phone is in landscape. */
+function screenAngle(): number {
+  const angle = window.screen?.orientation?.angle;
+  if (typeof angle === "number") return angle;
+  const legacy = (window as unknown as { orientation?: number }).orientation;
+  return typeof legacy === "number" ? legacy : 0;
+}
+
 export function useDeviceHeading() {
+  const secure = typeof window !== "undefined" && window.isSecureContext;
+
   const [heading, setHeading] = useState(0);
-  const [live, setLive] = useState(false);
-  const [note, setNote] = useState("Waiting for sensors");
+  const [source, setSource] = useState<Source>("none");
+  const [note, setNote] = useState(secure ? LABEL.none : INSECURE_NOTE);
+
+  // Read inside event handlers without re-subscribing on every update.
+  const sourceRef = useRef<Source>("none");
+
+  const publish = useCallback((deg: number, next: Source) => {
+    if (RANK[next] < RANK[sourceRef.current]) return;
+    sourceRef.current = next;
+    setSource(next);
+    setNote(LABEL[next]);
+    setHeading(((deg % 360) + 360) % 360);
+  }, []);
 
   useEffect(() => {
+    if (!secure) return;
+
     let gyroHeading = 0;
     let lastTs: number | null = null;
 
     const onOrientation = (e: DeviceOrientationEvent) => {
-      const abs = (e as DeviceOrientationEvent & { webkitCompassHeading?: number })
-        .webkitCompassHeading;
-      if (typeof abs === "number") {
-        setHeading(abs);
-        setLive(true);
-        setNote("Compass heading");
+      // iOS gives a true compass bearing directly.
+      const compass = (
+        e as DeviceOrientationEvent & { webkitCompassHeading?: number }
+      ).webkitCompassHeading;
+      if (typeof compass === "number" && !Number.isNaN(compass)) {
+        publish(compass, "absolute");
         return;
       }
-      if (e.absolute && typeof e.alpha === "number") {
-        setHeading((360 - e.alpha) % 360);
-        setLive(true);
-        setNote("Device orientation");
-      }
+
+      if (typeof e.alpha !== "number" || Number.isNaN(e.alpha)) return;
+
+      // alpha counts anticlockwise from north; a heading counts clockwise.
+      const deg = 360 - e.alpha + screenAngle();
+
+      // Plenty of Android phones report absolute:false on `deviceorientation`
+      // but still track rotation usefully — accept it as a lower-ranked source
+      // rather than ignoring it, which is what froze the arrow before.
+      publish(deg, e.absolute || e.type === "deviceorientationabsolute" ? "absolute" : "relative");
     };
 
     const onMotion = (e: DeviceMotionEvent) => {
+      // Last resort: integrate yaw rate. Responds to turning, but drifts and
+      // is not north-referenced, so it stays below the orientation sources.
       const rot = e.rotationRate;
       if (!rot || rot.alpha == null) return;
       const now = performance.now();
       if (lastTs != null) {
-        const dt = (now - lastTs) / 1000;
-        // alpha ≈ yaw rate deg/s on many phones
-        gyroHeading = (gyroHeading - rot.alpha * dt + 360) % 360;
-        setHeading(gyroHeading);
-        setLive(true);
-        setNote("Gyroscope tracking");
+        const dt = Math.min((now - lastTs) / 1000, 0.5);
+        gyroHeading = gyroHeading - rot.alpha * dt;
+        publish(gyroHeading, "gyro");
       }
       lastTs = now;
     };
 
+    window.addEventListener("deviceorientationabsolute", onOrientation);
     window.addEventListener("deviceorientation", onOrientation);
     window.addEventListener("devicemotion", onMotion);
 
+    // Nothing at all after a moment means the device has no usable sensors —
+    // say so instead of leaving "Waiting for sensors" up forever.
+    const idle = window.setTimeout(() => {
+      if (sourceRef.current === "none") setNote(NO_SENSOR_NOTE);
+    }, 2500);
+
     return () => {
+      window.removeEventListener("deviceorientationabsolute", onOrientation);
       window.removeEventListener("deviceorientation", onOrientation);
       window.removeEventListener("devicemotion", onMotion);
+      window.clearTimeout(idle);
     };
-  }, []);
+  }, [secure, publish]);
 
-  async function requestPermission() {
+  /** iOS 13+ needs an explicit grant, triggered from a user gesture. */
+  const requestPermission = useCallback(async () => {
+    if (!secure) {
+      setNote(INSECURE_NOTE);
+      return;
+    }
     const DOE = DeviceOrientationEvent as unknown as {
       requestPermission?: () => Promise<PermissionState>;
     };
     const DME = DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<PermissionState>;
     };
+    // Android has no such API — permission is implicit, so don't claim
+    // anything happened; the listeners above will report the real state.
+    if (typeof DOE.requestPermission !== "function") return;
     try {
-      if (typeof DOE.requestPermission === "function") {
-        await DOE.requestPermission();
-      }
+      const granted = await DOE.requestPermission();
       if (typeof DME.requestPermission === "function") {
         await DME.requestPermission();
       }
-      setNote("Sensors enabled");
+      if (granted !== "granted") {
+        setNote("Sensor permission denied — use Turn buttons");
+      }
     } catch {
       setNote("Sensor permission denied — use Turn buttons");
     }
-  }
+  }, [secure]);
 
-  function nudge(delta: number) {
+  /** Turn left / Turn right buttons. */
+  const nudge = useCallback((delta: number) => {
+    // A live sensor would overwrite this on its next event, so only let the
+    // buttons drive the arrow while nothing better is running.
+    if (RANK[sourceRef.current] > RANK.manual) return;
+    sourceRef.current = "manual";
+    setSource("manual");
+    setNote((n) => (n === INSECURE_NOTE || n === NO_SENSOR_NOTE ? n : LABEL.manual));
     setHeading((h) => (h + delta + 360) % 360);
-    setNote("Manual heading");
-  }
+  }, []);
 
-  return { heading, live, note, requestPermission, nudge, setHeading };
+  return {
+    heading,
+    live: RANK[source] > RANK.manual,
+    secure,
+    note,
+    requestPermission,
+    nudge,
+    setHeading,
+  };
 }
