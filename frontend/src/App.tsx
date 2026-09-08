@@ -9,6 +9,7 @@ import "./components/Volunteer.css";
 import { useDeviceHeading } from "./hooks/useDeviceHeading";
 import { useLivePosition } from "./hooks/useLivePosition";
 import { usePhoneAppBase } from "./hooks/usePhoneAppBase";
+import { useSmoothedBearing } from "./hooks/useSmoothedBearing";
 import { findRoute, edgeBetween } from "./lib/router";
 import { apiBase } from "./lib/network";
 import {
@@ -135,23 +136,17 @@ export default function App() {
   const hasPath = !!route && route.codes.length >= 2;
   const liveNav = useLivePosition(mode === "user" && step === "guide" && hasPath);
 
-  // Prefer live phone GPS for direction — board-only bearing points through glass/walls.
-  const fromLat = liveNav.pos?.lat ?? start?.lat;
-  const fromLon = liveNav.pos?.lon ?? start?.lon;
+  // Only steer from live GPS when the fix is accurate enough; otherwise stay
+  // on the last scanned board so indoor noise does not spin the arrow.
+  const useLive =
+    !!liveNav.pos?.usable && liveNav.pos.lat != null && liveNav.pos.lon != null;
+  const fromLat = useLive ? liveNav.pos!.lat : start?.lat;
+  const fromLon = useLive ? liveNav.pos!.lon : start?.lon;
 
-  const sameBoardArrive =
-    !!route &&
-    !!start &&
-    !!dest &&
-    route.codes.length === 1 &&
-    start.code.toUpperCase() === dest.code.toUpperCase();
-
-  const gpsArrive =
-    !!liveNav.pos &&
-    !!dest &&
-    haversineM(liveNav.pos.lat, liveNav.pos.lon, dest.lat, dest.lon) <= 8;
-
-  const arrived = sameBoardArrive || gpsArrive;
+  // Arrive only when the phone has scanned / set itself on the destination board.
+  // Indoor GPS jumps were falsely showing “reached” mid-route.
+  const arrived =
+    !!start && !!dest && start.code.toUpperCase() === dest.code.toUpperCase();
 
   const edgeLegM =
     hasPath
@@ -168,7 +163,11 @@ export default function App() {
     fromLat != null && fromLon != null && nextNode
       ? bearingDeg(fromLat, fromLon, nextNode.lat, nextNode.lon)
       : 0;
-  const arrowDeg = (bearingToNext - heading.heading + 360) % 360;
+  const rawArrowDeg = (bearingToNext - heading.heading + 360) % 360;
+  const arrowDeg = useSmoothedBearing(
+    rawArrowDeg,
+    mode === "user" && step === "guide" && hasPath && !arrived
+  );
 
   const handleUserScan = useCallback(
     (code: string) => {
@@ -467,7 +466,32 @@ export default function App() {
         </section>
       )}
 
-      {step === "guide" && start && dest && route && !hasPath && (
+      {step === "guide" && start && dest && arrived && (
+        <section className="screen guide">
+          <TopBar
+            title={dest.name}
+            subtitle="You have arrived"
+            onBack={() => setStep("destination")}
+            light
+          />
+          <div className="empty-route">
+            <p>✓ You have reached {dest.name}</p>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => {
+                setStep("home");
+                setStart(null);
+                setDest(null);
+              }}
+            >
+              Done
+            </button>
+          </div>
+        </section>
+      )}
+
+      {step === "guide" && start && dest && route && !hasPath && !arrived && (
         <section className="screen guide">
           <TopBar
             title={dest.name}
@@ -491,7 +515,7 @@ export default function App() {
         </section>
       )}
 
-      {step === "guide" && start && dest && route && hasPath && guideView === "camera" && (
+      {step === "guide" && start && dest && route && hasPath && !arrived && guideView === "camera" && (
         <ArGuide
           arrowDeg={arrowDeg}
           nextName={nextNode?.name ?? dest.name}
@@ -509,7 +533,7 @@ export default function App() {
         />
       )}
 
-      {step === "guide" && start && dest && route && hasPath && guideView === "compass" && (
+      {step === "guide" && start && dest && route && hasPath && !arrived && guideView === "compass" && (
         <section className="screen guide">
           <TopBar
             title={dest.name}

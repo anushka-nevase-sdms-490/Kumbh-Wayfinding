@@ -199,8 +199,8 @@ export function ArGuide(props: Props) {
             </div>
           )}
           <p className="ar-hint">
-            Arrow follows live GPS toward the next board. Walk around walls or
-            glass — register boards along the real walkable path.
+            Scan the destination board QR when you arrive. Arrow uses GPS only
+            when the fix is stable; noisy indoor GPS falls back to the board.
           </p>
           <button type="button" className="ar-switch subtle" onClick={onUseCompass}>
             Compass view

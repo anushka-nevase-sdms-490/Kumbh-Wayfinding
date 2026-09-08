@@ -49,23 +49,29 @@ export function useDeviceHeading() {
   // Read inside event handlers without re-subscribing on every update.
   const sourceRef = useRef<Source>("none");
   const headingRef = useRef(0);
+  const lastPublishRef = useRef(0);
 
   const publish = useCallback((deg: number, next: Source) => {
     if (RANK[next] < RANK[sourceRef.current]) return;
-    // Soften jumps so the AR arrow does not flicker when sensors are noisy.
     const incoming = ((deg % 360) + 360) % 360;
+    const prev = headingRef.current;
+    let delta = incoming - prev;
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
     let smoothed = incoming;
-    if (RANK[next] >= RANK.relative && RANK[sourceRef.current] >= RANK.relative) {
-      const prev = headingRef.current;
-      let delta = incoming - prev;
-      if (delta > 180) delta -= 360;
-      if (delta < -180) delta += 360;
-      if (Math.abs(delta) < 45) {
-        smoothed = (prev + delta * 0.35 + 360) % 360;
+    if (RANK[sourceRef.current] >= RANK.relative) {
+      if (Math.abs(delta) > 55) {
+        smoothed = (prev + Math.sign(delta) * 6 + 360) % 360;
+      } else {
+        smoothed = (prev + delta * 0.18 + 360) % 360;
       }
     }
-    sourceRef.current = next;
     headingRef.current = smoothed;
+    sourceRef.current = next;
+
+    const now = performance.now();
+    if (now - lastPublishRef.current < 90) return;
+    lastPublishRef.current = now;
     setSource(next);
     setNote(LABEL[next]);
     setHeading(smoothed);
