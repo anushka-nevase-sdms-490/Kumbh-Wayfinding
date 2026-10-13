@@ -21,10 +21,10 @@ export function BoardQrGallery({ nodes, onBack, onUseAsStart }: Props) {
           ←
         </button>
         <div>
-          <h2>QR boards</h2>
+          <h2>Kumbh QR boards</h2>
           <p>
-            These open the app on a phone (URL inside QR). Print them or open on
-            another screen to scan.
+            Print these for ghats, akharas, camps, and gates. A phone scan opens
+            the visitor guide at that place.
           </p>
         </div>
       </div>

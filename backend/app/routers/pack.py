@@ -46,7 +46,7 @@ def download_pack(version: str, db: Session = Depends(get_db)):
 
 @router.get("/latest/json", response_model=OfflinePack)
 def latest_pack_json(db: Session = Depends(get_db)):
-    """Convenience: rebuild-or-return latest pack body for the pilgrim app."""
+    """Convenience: rebuild-or-return latest pack body for the visitor app."""
     row = db.query(PackVersion).order_by(PackVersion.id.desc()).first()
     if not row:
         pack, _ = build_offline_pack(db)

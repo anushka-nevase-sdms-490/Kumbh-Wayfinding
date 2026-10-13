@@ -1,30 +1,57 @@
 import { useEffect, useRef, useState } from "react";
 
-/** Smooth a 0–360° angle without spinning the long way on wrap. */
-export function useSmoothedBearing(targetDeg: number, active: boolean): number {
-  const [smooth, setSmooth] = useState(() => ((targetDeg % 360) + 360) % 360);
-  const valueRef = useRef(smooth);
-  const targetRef = useRef(targetDeg);
+function norm360(deg: number) {
+  return ((deg % 360) + 360) % 360;
+}
 
-  targetRef.current = ((targetDeg % 360) + 360) % 360;
+function shortestDelta(from: number, to: number) {
+  return ((to - from + 540) % 360) - 180;
+}
+
+/**
+ * Snap + heavy smooth for the AR arrow.
+ * Display updates in ~15° steps so small compass noise does not shake the arrow.
+ */
+export function useSmoothedBearing(targetDeg: number, active: boolean): number {
+  const snap = (deg: number) => Math.round(norm360(deg) / 15) * 15 % 360;
+  const [smooth, setSmooth] = useState(() => snap(targetDeg));
+  const displayRef = useRef(smooth);
+  const targetRef = useRef(snap(targetDeg));
+
+  useEffect(() => {
+    targetRef.current = snap(targetDeg);
+  }, [targetDeg]);
 
   useEffect(() => {
     if (!active) {
-      valueRef.current = targetRef.current;
+      displayRef.current = targetRef.current;
       setSmooth(targetRef.current);
       return;
     }
 
     let raf = 0;
-    const tick = () => {
-      const prev = valueRef.current;
+    let lastUi = 0;
+
+    const tick = (now: number) => {
+      const prev = displayRef.current;
       const target = targetRef.current;
-      let delta = ((target - prev + 540) % 360) - 180;
-      if (Math.abs(delta) > 50) delta *= 0.12;
-      else delta *= 0.16;
-      const next = (prev + delta + 360) % 360;
-      valueRef.current = next;
-      setSmooth(next);
+      const delta = shortestDelta(prev, target);
+
+      // Hold still unless the snapped target moved enough (hysteresis).
+      if (Math.abs(delta) < 12) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+
+      const next = norm360(prev + delta * 0.12);
+      displayRef.current = next;
+
+      if (now - lastUi > 50) {
+        lastUi = now;
+        // Round for React so we don't re-render on tiny floats.
+        const rounded = Math.round(next);
+        setSmooth((s) => (s === rounded ? s : rounded));
+      }
       raf = requestAnimationFrame(tick);
     };
 

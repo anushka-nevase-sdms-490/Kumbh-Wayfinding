@@ -1,4 +1,4 @@
-# setu_pilgrim
+# Setu Visitor
 
 A new Flutter project.
 

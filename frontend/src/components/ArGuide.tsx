@@ -12,11 +12,15 @@ type Props = {
   arrived: boolean;
   sensorLive: boolean;
   sensorNote: string;
+  /** First step from obstacle-aware path plan (optional). */
+  pathHint?: string | null;
   /** Fired when a board QR comes into view — re-anchors the route. */
   onScan: (code: string) => void;
   onNudge: (delta: number) => void;
   onExit: () => void;
   onUseCompass: () => void;
+  /** User reports current leg blocked → reroute. */
+  onPathBlocked?: () => void;
 };
 
 const READER_ID = "routefinding-ar-cam";
@@ -27,15 +31,40 @@ function signedTurn(deg: number) {
   return d > 180 ? d - 360 : d;
 }
 
-function instruction(deg: number, nextName: string) {
+/** Sticky instructions with hysteresis so text does not flicker. */
+function instructionBucket(deg: number): number {
+  const mag = Math.abs(signedTurn(deg));
+  if (mag <= 25) return 0; // ahead
+  if (mag <= 70) return 1; // turn
+  if (mag <= 140) return 2; // sharp
+  return 3; // around
+}
+
+function instructionFromBucket(
+  deg: number,
+  bucket: number,
+  nextName: string,
+  sensorLive: boolean
+): { text: string; detail: string } {
+  if (!sensorLive) {
+    return {
+      text: "Compass not ready",
+      detail:
+        "Open the HTTPS (ngrok) link with a padlock, enable sensors, then use Adjust — or follow the orange arrow",
+    };
+  }
   const t = signedTurn(deg);
   const side = t < 0 ? "left" : "right";
-  const mag = Math.abs(t);
-  if (mag <= 20) return { text: "This way", detail: `GPS bearing to ${nextName}` };
-  if (mag <= 60) return { text: `Turn ${side}`, detail: `about ${Math.round(mag)}° · then walk` };
-  if (mag <= 120) return { text: `Turn ${side}`, detail: `${Math.round(mag)}° to your ${side}` };
-  if (mag <= 165) return { text: `Sharp ${side}`, detail: `${Math.round(mag)}° to your ${side}` };
-  return { text: "Turn around", detail: `${nextName} is behind you` };
+  if (bucket === 0)
+    return {
+      text: "Walk ahead",
+      detail: `to the ${nextName} board — then scan it`,
+    };
+  if (bucket === 1)
+    return { text: `Turn ${side}`, detail: `then walk to ${nextName} board` };
+  if (bucket === 2)
+    return { text: `Sharp ${side}`, detail: `next board: ${nextName}` };
+  return { text: "Turn around", detail: `${nextName} board is behind you` };
 }
 
 export function ArGuide(props: Props) {
@@ -51,12 +80,30 @@ export function ArGuide(props: Props) {
     onNudge,
     onExit,
     onUseCompass,
+    onPathBlocked,
   } = props;
 
   const [camError, setCamError] = useState<string | null>(null);
   const [camReady, setCamReady] = useState(false);
+  const [instrBucket, setInstrBucket] = useState(() =>
+    instructionBucket(arrowDeg)
+  );
   const onScanRef = useRef(onScan);
   onScanRef.current = onScan;
+
+  useEffect(() => {
+    const next = instructionBucket(arrowDeg);
+    // Hysteresis: only change banner when clearly in a new band.
+    setInstrBucket((prev) => {
+      if (next === prev) return prev;
+      const mag = Math.abs(signedTurn(arrowDeg));
+      if (prev === 0 && mag < 32) return prev;
+      if (prev === 1 && mag > 20 && mag < 85) return prev;
+      if (prev === 2 && mag > 60 && mag < 155) return prev;
+      if (prev === 3 && mag > 150) return prev;
+      return next;
+    });
+  }, [arrowDeg]);
 
   useEffect(() => {
     let stopped = false;
@@ -111,9 +158,14 @@ export function ArGuide(props: Props) {
     };
   }, []);
 
-  const turn = signedTurn(arrowDeg);
-  const { text, detail } = instruction(arrowDeg, nextName);
-  const onCourse = Math.abs(turn) <= 20;
+  const { text, detail } = instructionFromBucket(
+    arrowDeg,
+    instrBucket,
+    nextName,
+    sensorLive
+  );
+  const onCourse = sensorLive && instrBucket === 0;
+  const insecure = typeof window !== "undefined" && !window.isSecureContext;
 
   return (
     <div className="ar">
@@ -129,6 +181,16 @@ export function ArGuide(props: Props) {
       )}
 
       <div className="ar-overlay">
+        {insecure && (
+          <div className="ar-banner ar-banner-warn">
+            <p className="ar-instruction">Wrong link — HTTP</p>
+            <p className="ar-detail">
+              Compass cannot work on http://192.168… Open the ngrok HTTPS link
+              (padlock), then try again. Turn left/right will stay wrong until
+              then.
+            </p>
+          </div>
+        )}
         <div className="ar-top">
           <button type="button" className="ar-back" onClick={onExit} aria-label="Back">
             ←
@@ -142,11 +204,12 @@ export function ArGuide(props: Props) {
         {arrived ? (
           <div className="ar-arrived">
             <div className="ar-arrived-mark">✓</div>
-            <p>You have reached {destName}</p>
+            <p>YOU REACHED YOUR DESTINATION</p>
+            <p>Destination reached successfully</p>
           </div>
         ) : (
           <>
-            <div className={`ar-banner ${onCourse ? "straight" : ""}`}>
+            <div className={`ar-banner ${onCourse ? "straight" : ""} ${!sensorLive ? "ar-banner-warn" : ""}`}>
               <p className="ar-instruction">{text}</p>
               <p className="ar-detail">{detail}</p>
             </div>
@@ -190,18 +253,34 @@ export function ArGuide(props: Props) {
           </p>
           {!sensorLive && (
             <div className="ar-nudge">
-              <button type="button" onClick={() => onNudge(-20)}>
+              <button type="button" onClick={() => onNudge(-15)}>
                 ◀ Turn left
               </button>
-              <button type="button" onClick={() => onNudge(20)}>
+              <button type="button" onClick={() => onNudge(15)}>
                 Turn right ▶
               </button>
             </div>
           )}
+          {sensorLive && (
+            <div className="ar-nudge">
+              <button type="button" onClick={() => onNudge(-15)}>
+                ◀ Adjust left
+              </button>
+              <button type="button" onClick={() => onNudge(15)}>
+                Adjust right ▶
+              </button>
+            </div>
+          )}
           <p className="ar-hint">
-            Scan the destination board QR when you arrive. Arrow uses GPS only
-            when the fix is stable; noisy indoor GPS falls back to the board.
+            Arrow points along the walked lane to the next QR board. Stay on
+            the mela path around tents and barricades. Scan each board as you
+            reach it.
           </p>
+          {onPathBlocked && (
+            <button type="button" className="ar-switch" onClick={onPathBlocked}>
+              Path blocked — find another route
+            </button>
+          )}
           <button type="button" className="ar-switch subtle" onClick={onUseCompass}>
             Compass view
           </button>

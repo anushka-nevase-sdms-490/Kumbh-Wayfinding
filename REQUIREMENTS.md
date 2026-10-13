@@ -55,7 +55,7 @@ Uses **SQLite by default** (no Postgres required for local demo).
 
 | URL | What |
 |-----|------|
-| http://localhost:5173 | **Open this** — pilgrim UI |
+| http://localhost:5173 | **Open this** — visitor UI |
 | http://localhost:8000 | Backend API |
 | http://localhost:8000/docs | API documentation |
 

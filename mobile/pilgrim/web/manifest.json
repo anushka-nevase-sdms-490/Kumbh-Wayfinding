@@ -1,6 +1,6 @@
 {
-    "name": "setu_pilgrim",
-    "short_name": "setu_pilgrim",
+    "name": "Setu Visitor",
+    "short_name": "Visitor",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

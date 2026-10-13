@@ -118,23 +118,111 @@ if ! python3 -c "import venv" 2>/dev/null; then
   fail "Python venv missing. Run: sudo apt install python3-venv python3-pip"
 fi
 
-# Local TLS for Vite/uvicorn. Phone GPS still needs ngrok (trusted padlock).
+# Local TLS for Vite/uvicorn. A local CA is installed into Chrome so
+# https://localhost does not show "Your connection is not private" every run.
+# Phone GPS still needs the ngrok URL (a public padlock).
 SCHEME="https"
 USE_HTTPS="${USE_HTTPS:-1}"
 USE_TUNNEL="${USE_TUNNEL:-1}"
+CA_KEY="$CERT_DIR/local-ca-key.pem"
+CA_CRT="$CERT_DIR/local-ca.pem"
+CA_NAME="Routefinding Local CA"
+
+local_certutil() {
+  if command -v certutil >/dev/null 2>&1; then
+    command -v certutil
+    return 0
+  fi
+  local bundled="$ROOT/.tools/certutil"
+  if [[ -x "$bundled" ]]; then
+    echo "$bundled"
+    return 0
+  fi
+  info "Fetching certificate tools so Chrome can trust localhost..." >&2
+  mkdir -p "$ROOT/.tools/nss"
+  if (cd "$ROOT/.tools/nss" && apt-get download libnss3-tools >/dev/null 2>&1); then
+    local deb
+    deb="$(ls -1 "$ROOT/.tools/nss"/libnss3-tools_*.deb 2>/dev/null | head -1)"
+    if [[ -n "$deb" ]]; then
+      dpkg -x "$deb" "$ROOT/.tools/nss" >/dev/null 2>&1 || true
+      if [[ -x "$ROOT/.tools/nss/usr/bin/certutil" ]]; then
+        cp "$ROOT/.tools/nss/usr/bin/certutil" "$bundled"
+        chmod +x "$bundled"
+        echo "$bundled"
+        return 0
+      fi
+    fi
+  fi
+  return 1
+}
+
+trust_local_ca() {
+  local certutil_bin=""
+  certutil_bin="$(local_certutil)" || true
+  if [[ -n "$certutil_bin" ]]; then
+    mkdir -p "${HOME}/.pki/nssdb"
+    if [[ ! -f "${HOME}/.pki/nssdb/cert9.db" ]]; then
+      "$certutil_bin" -d "sql:${HOME}/.pki/nssdb" -N --empty-password >/dev/null 2>&1 || true
+    fi
+    "$certutil_bin" -d "sql:${HOME}/.pki/nssdb" -D -n "${CA_NAME}" >/dev/null 2>&1 || true
+    if "$certutil_bin" -d "sql:${HOME}/.pki/nssdb" -A -t "C,," -n "${CA_NAME}" -i "${CA_CRT}"; then
+      ok "Chrome trusts ${CA_NAME}. Fully quit Chrome, then open https://localhost:${FRONTEND_PORT}"
+    fi
+  else
+    info "Could not install Chrome trust automatically. Open https://localhost once and choose Proceed."
+  fi
+  local sys_cert="/usr/local/share/ca-certificates/routefinding-local-ca.crt"
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1 && [[ -d /usr/local/share/ca-certificates ]]; then
+    sudo cp "${CA_CRT}" "${sys_cert}" && sudo update-ca-certificates >/dev/null 2>&1 \
+      && ok "System trust store updated" || true
+  fi
+}
 
 if [[ "$USE_HTTPS" != "1" ]]; then
   SCHEME="http"
   echo "${RED}Note:${NC} USE_HTTPS=0 — phone GPS autofill will not work."
 else
-  if [[ ! -f "$CRT_FILE" ]] || ! openssl x509 -in "$CRT_FILE" -noout -text 2>/dev/null | grep -q "IP Address:${LAN_IP}"; then
-    info "Creating self-signed cert for localhost + ${LAN_IP} ..."
-    openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 \
-      -keyout "$KEY_FILE" -out "$CRT_FILE" -subj "/CN=setu-dev" \
-      -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:${LAN_IP}" \
-      >/dev/null 2>&1 || fail "Could not create TLS certificate"
+  need_cert=0
+  if [[ ! -f "$CA_CRT" || ! -f "$CA_KEY" ]]; then
+    need_cert=1
   fi
-  [[ -f "$KEY_FILE" && -f "$CRT_FILE" ]] || fail "TLS cert files missing"
+  if [[ ! -f "$CRT_FILE" || ! -f "$KEY_FILE" ]]; then
+    need_cert=1
+  elif ! openssl x509 -in "$CRT_FILE" -noout -text 2>/dev/null | grep -q "IP Address:${LAN_IP}"; then
+    need_cert=1
+  elif ! openssl verify -CAfile "$CA_CRT" "$CRT_FILE" >/dev/null 2>&1; then
+    need_cert=1
+  fi
+  if [[ "$need_cert" == "1" ]]; then
+    info "Creating a local certificate Chrome can trust..."
+    if [[ ! -f "$CA_CRT" || ! -f "$CA_KEY" ]]; then
+      openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 \
+        -keyout "$CA_KEY" -out "$CA_CRT" \
+        -subj "/CN=${CA_NAME}" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        >/dev/null 2>&1 || fail "Could not create local certificate authority"
+      chmod 600 "$CA_KEY"
+    fi
+    tmp_ext="$(mktemp)"
+    cat >"$tmp_ext" <<EOF
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:localhost,DNS:localhost.localdomain,IP:127.0.0.1,IP:${LAN_IP}
+EOF
+    openssl req -new -newkey rsa:2048 -nodes \
+      -keyout "$KEY_FILE" -out "$CERT_DIR/dev.csr" \
+      -subj "/CN=localhost" >/dev/null 2>&1 || fail "Could not create certificate request"
+    chmod 600 "$KEY_FILE"
+    openssl x509 -req -in "$CERT_DIR/dev.csr" \
+      -CA "$CA_CRT" -CAkey "$CA_KEY" -CAcreateserial \
+      -out "$CRT_FILE" -days 825 -sha256 \
+      -extfile "$tmp_ext" >/dev/null 2>&1 || fail "Could not sign localhost certificate"
+    rm -f "$tmp_ext" "$CERT_DIR/dev.csr"
+  fi
+  [[ -f "$KEY_FILE" && -f "$CRT_FILE" && -f "$CA_CRT" ]] || fail "TLS cert files missing"
+  trust_local_ca
   ok "TLS enabled (local https://localhost:${FRONTEND_PORT})"
 fi
 

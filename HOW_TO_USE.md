@@ -2,7 +2,7 @@
 
 ## What you are looking at
 
-`http://localhost:5173` is the **pilgrim phone website**.
+`http://localhost:5173` is the **visitor phone website**.
 
 It should show:
 - big title **Setu**

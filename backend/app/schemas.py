@@ -31,10 +31,21 @@ class EdgeCreate(BaseModel):
     surface: str = "paved"
     walkable: bool = True
     bidirectional: bool = True
+    heading_ab: Optional[float] = None
+    heading_ba: Optional[float] = None
+    passage_kind: str = "corridor"  # corridor | door | glass_door | passage
+    door_state: str = "none"  # none | open | closed | unknown
+    blocked: bool = False
+    obstacle_note: Optional[str] = None
+    clearance_m: Optional[float] = None
+    cost_mult: float = 1.0
+    verified: bool = False
+    path_json: Optional[str] = None
 
 
 class EdgeOut(EdgeCreate):
     id: int
+    verified_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -79,8 +90,13 @@ class VolunteerRegisterRequest(BaseModel):
     lat: float
     lon: float
     node_type: str = "landmark"
-    # Optional override; normally server assigns KUMBH-A## 
+    # Optional override; normally server assigns KUMBH-A##
     code: Optional[str] = Field(None, min_length=2, max_length=32)
+    # Walkable neighbor — previous board on the real path.
+    connect_to_code: Optional[str] = Field(None, min_length=2, max_length=32)
+    # Compass heading while standing at the NEW board, pointing along the
+    # walkable path toward the previous board (around desks/glass).
+    path_heading_deg: Optional[float] = None
 
     @field_validator("lat")
     @classmethod
@@ -105,8 +121,60 @@ class VolunteerRegisterRequest(BaseModel):
         return s
 
 
+class VolunteerPathHeadingRequest(BaseModel):
+    """Set real walk direction on an existing edge (fixes straight-through-desk arrows)."""
+
+    from_code: str = Field(..., min_length=2, max_length=32)
+    to_code: str = Field(..., min_length=2, max_length=32)
+    # Standing at `to_code`, phone pointed along walk toward `from_code`.
+    path_heading_deg: float
+
+    @field_validator("path_heading_deg")
+    @classmethod
+    def heading_range(cls, v: float) -> float:
+        return ((v % 360) + 360) % 360
+
+
+class VolunteerEdgeStatusRequest(BaseModel):
+    """Block a path or set door state so A* never routes through it."""
+
+    from_code: str = Field(..., min_length=2, max_length=32)
+    to_code: str = Field(..., min_length=2, max_length=32)
+    blocked: Optional[bool] = None
+    door_state: Optional[str] = None  # none | open | closed | unknown
+    passage_kind: Optional[str] = None
+    obstacle_note: Optional[str] = None
+    clearance_m: Optional[float] = None
+    walkable: Optional[bool] = None
+
+    @field_validator("door_state")
+    @classmethod
+    def door_ok(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        s = v.strip().lower()
+        if s not in {"none", "open", "closed", "unknown"}:
+            raise ValueError("door_state must be none|open|closed|unknown")
+        return s
+
+
 class VolunteerRegisterResponse(BaseModel):
     success: bool
     message: str
     node: Optional[QrNodeOut] = None
     existing_name: Optional[str] = None
+
+
+class PathWaypoint(BaseModel):
+    lat: float
+    lon: float
+    heading_deg: Optional[float] = None
+    t_ms: Optional[int] = None
+
+
+class VolunteerRecordPathRequest(BaseModel):
+    """Volunteer walks from → to once; we store that as a verified walkable path."""
+
+    from_code: str = Field(..., min_length=2, max_length=32)
+    to_code: str = Field(..., min_length=2, max_length=32)
+    waypoints: List[PathWaypoint] = Field(..., min_length=2)

@@ -52,6 +52,6 @@ flutter run
 | Folder | What |
 |--------|------|
 | `backend/` | API + database + offline pack |
-| `frontend/` | React pilgrim UI |
-| `mobile/` | Flutter apps (pilgrim + staff) |
+| `frontend/` | React visitor UI |
+| `mobile/` | Flutter apps (visitor + staff) |
 | `_archive/` | Old admin UI (not used) |

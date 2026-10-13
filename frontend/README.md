@@ -1,6 +1,6 @@
 # Setu Frontend (React)
 
-Pilgrim web app: scan/select start → pick destination → follow arrow on man-made routes.
+Visitor web app: scan/select start → pick destination → follow arrow on man-made routes.
 
 ## Folder
 

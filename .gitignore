@@ -22,6 +22,7 @@ frontend/dist/
 frontend/.env
 mobile/**/build/
 .run-logs/
+.tools/
 *.pyc
 .DS_Store
 .env

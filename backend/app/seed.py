@@ -9,13 +9,14 @@ from .services.pack_builder import build_offline_pack, haversine_m
 # These are fictional micro-site points ~40–60 m apart.
 SEED_NODES = [
     {"code": "SETU-A01", "name": "Ram Kund Ghat", "lat": 19.9975, "lon": 73.7898, "node_type": "ghat", "icon": "ghat"},
-    {"code": "SETU-A02", "name": "Junction East", "lat": 19.9978, "lon": 73.7902, "node_type": "junction", "icon": "junction"},
-    {"code": "SETU-A03", "name": "Medical Camp", "lat": 19.9981, "lon": 73.7905, "node_type": "medical", "icon": "medical"},
-    {"code": "SETU-B01", "name": "Toilet Block A", "lat": 19.9972, "lon": 73.7901, "node_type": "toilet", "icon": "toilet"},
-    {"code": "SETU-B02", "name": "Help Desk", "lat": 19.9976, "lon": 73.7906, "node_type": "help", "icon": "help"},
-    {"code": "SETU-C01", "name": "Parking P1", "lat": 19.9969, "lon": 73.7895, "node_type": "parking", "icon": "parking"},
-    {"code": "SETU-C02", "name": "Lost & Found", "lat": 19.9980, "lon": 73.7896, "node_type": "lost_found", "icon": "lost_found"},
-    {"code": "SETU-D01", "name": "Bus Stand", "lat": 19.9968, "lon": 73.7904, "node_type": "transport", "icon": "transport"},
+    {"code": "SETU-A02", "name": "Triveni lane turn", "lat": 19.9978, "lon": 73.7902, "node_type": "junction", "icon": "junction"},
+    {"code": "SETU-A03", "name": "Sector medical camp", "lat": 19.9981, "lon": 73.7905, "node_type": "medical", "icon": "medical"},
+    {"code": "SETU-B01", "name": "Mela toilet block", "lat": 19.9972, "lon": 73.7901, "node_type": "toilet", "icon": "toilet"},
+    {"code": "SETU-B02", "name": "Mela help desk", "lat": 19.9976, "lon": 73.7906, "node_type": "help", "icon": "help"},
+    {"code": "SETU-C01", "name": "Sector parking", "lat": 19.9969, "lon": 73.7895, "node_type": "parking", "icon": "parking"},
+    {"code": "SETU-C02", "name": "Lost and found", "lat": 19.9980, "lon": 73.7896, "node_type": "lost_found", "icon": "lost_found"},
+    {"code": "SETU-D01", "name": "Mela bus stand", "lat": 19.9968, "lon": 73.7904, "node_type": "transport", "icon": "transport"},
+    {"code": "SETU-E01", "name": "Juna Akhara", "lat": 19.9984, "lon": 73.7908, "node_type": "akhara", "icon": "akhara"},
 ]
 
 # Walkable connections (undirected)
@@ -32,6 +33,7 @@ SEED_LINKS = [
     ("SETU-B01", "SETU-D01", "paved"),
     ("SETU-B02", "SETU-D01", "steps"),
     ("SETU-A02", "SETU-C02", "paved"),
+    ("SETU-A03", "SETU-E01", "paved"),
 ]
 
 

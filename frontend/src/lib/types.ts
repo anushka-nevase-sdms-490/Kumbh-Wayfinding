@@ -17,6 +17,24 @@ export type GraphEdge = {
   distance_m: number;
   surface: string;
   bidirectional?: boolean;
+  walkable?: boolean;
+  /** Compass° leaving from_code → to_code along the real walk (not GPS line). */
+  heading_ab?: number | null;
+  /** Compass° leaving to_code → from_code along the real walk. */
+  heading_ba?: number | null;
+  /** corridor | door | glass_door | glass_wall | wall | passage */
+  passage_kind?: string;
+  /** none | open | closed | unknown */
+  door_state?: string;
+  blocked?: boolean;
+  obstacle_note?: string | null;
+  clearance_m?: number | null;
+  cost_mult?: number;
+  /** Volunteer walked this corridor once. */
+  verified?: boolean;
+  verified_at?: string | null;
+  /** JSON string of path waypoints, or parsed list from pack. */
+  path_json?: string | null;
 };
 
 export type OfflinePack = {
@@ -29,9 +47,10 @@ export type OfflinePack = {
 /** Special QR payload / path segment — opens volunteer registration (not a place node). */
 export const VOLUNTEER_REGISTER_CODE = "VOLUNTEER_REGISTER";
 
-/** Volunteer-registered boards (KUMBH-A01…) — shown to Users; demo SETU-* seed is hidden. */
+/** Every Kumbh place board. The volunteer-registration QR is not a place. */
 export function isRegisteredLocation(node: Pick<QrNode, "code">): boolean {
-  return /^KUMBH-A\d+/i.test(node.code.trim());
+  const code = node.code.trim().toUpperCase();
+  return code.length > 0 && code !== VOLUNTEER_REGISTER_CODE;
 }
 
 /** App origin for phone-scannable QR links (same host the page is on). */
@@ -72,15 +91,16 @@ export const TYPE_META: Record<
   string,
   { label: string; emoji: string; hint: string }
 > = {
-  ghat: { label: "Ghat", emoji: "◇", hint: "Bathing & rituals" },
-  medical: { label: "Medical", emoji: "+", hint: "First aid camp" },
-  toilet: { label: "Toilet", emoji: "□", hint: "Sanitation block" },
-  parking: { label: "Parking", emoji: "P", hint: "Vehicle zone" },
-  lost_found: { label: "Lost & Found", emoji: "?", hint: "Reunite here" },
-  transport: { label: "Transport", emoji: "▷", hint: "Bus / rail link" },
-  help: { label: "Help desk", emoji: "!", hint: "Ask staff" },
-  junction: { label: "Junction", emoji: "·", hint: "Path crossing" },
-  landmark: { label: "Landmark", emoji: "◎", hint: "Registered place" },
+  ghat: { label: "Ghat", emoji: "◇", hint: "Bathing ghat" },
+  akhara: { label: "Akhara", emoji: "◎", hint: "Akhara camp" },
+  medical: { label: "Medical", emoji: "+", hint: "Medical camp" },
+  toilet: { label: "Toilet", emoji: "□", hint: "Mela toilet block" },
+  parking: { label: "Parking", emoji: "P", hint: "Mela parking" },
+  lost_found: { label: "Lost & Found", emoji: "?", hint: "Lost visitors" },
+  transport: { label: "Transport", emoji: "▷", hint: "Bus or rail hub" },
+  help: { label: "Help", emoji: "!", hint: "Help desk" },
+  junction: { label: "Lane turn", emoji: "·", hint: "Corner on the walk" },
+  landmark: { label: "Landmark", emoji: "◎", hint: "Mela landmark" },
 };
 
 export function normalizeCode(raw: string): string {

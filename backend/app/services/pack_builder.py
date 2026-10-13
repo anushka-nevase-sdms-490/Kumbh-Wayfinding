@@ -26,7 +26,14 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 def build_offline_pack(db: Session) -> Tuple[OfflinePack, str]:
     nodes = db.query(QrNode).all()
-    edges = db.query(Edge).filter(Edge.walkable.is_(True)).all()
+    # Navigable only: walkable, not blocked, door not closed.
+    edges = (
+        db.query(Edge)
+        .filter(Edge.walkable.is_(True))
+        .filter(Edge.blocked.is_(False))
+        .filter(Edge.door_state != "closed")
+        .all()
+    )
 
     node_outs = [QrNodeOut.model_validate(n) for n in nodes]
     edge_outs = [EdgeOut.model_validate(e) for e in edges]

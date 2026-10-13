@@ -1,5 +1,5 @@
 name: setu_pilgrim
-description: Setu offline wayfinding — pilgrim app (gyroscope PDR)
+description: Setu offline wayfinding — visitor app (gyroscope PDR)
 publish_to: "none"
 version: 0.1.0+1
 

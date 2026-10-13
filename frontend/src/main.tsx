@@ -14,7 +14,7 @@ class ErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("Routefinding UI crashed:", error, info);
+    console.error("Kumbh Wayfinding UI crashed:", error, info);
   }
 
   render() {
@@ -29,7 +29,7 @@ class ErrorBoundary extends Component<
             color: "#14201c",
           }}
         >
-          <h1 style={{ marginTop: 0 }}>Routefinding hit an error</h1>
+          <h1 style={{ marginTop: 0 }}>Kumbh Wayfinding hit an error</h1>
           <p>Open DevTools (F12) → Console for details.</p>
           <pre
             style={{

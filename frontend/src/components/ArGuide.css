@@ -109,6 +109,11 @@
   border-color: rgba(126, 217, 163, 0.6);
 }
 
+.ar-banner-warn {
+  border-color: rgba(255, 120, 80, 0.85) !important;
+  background: rgba(60, 20, 10, 0.75) !important;
+}
+
 .ar-instruction {
   margin: 0;
   font-size: 1.9rem;
@@ -147,7 +152,8 @@
   width: min(62vw, 280px);
   height: auto;
   transform-origin: 50% 72%;
-  transition: transform 140ms linear;
+  transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
   filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.6));
 }
 

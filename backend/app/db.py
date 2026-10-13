@@ -48,6 +48,28 @@ class Edge(Base):
     surface = Column(String(32), nullable=False, default="paved")  # paved | sand | steps
     walkable = Column(Boolean, nullable=False, default=True)
     bidirectional = Column(Boolean, nullable=False, default=True)
+    # Compass degrees when leaving from_code toward to_code along the REAL walk
+    # (around desks/glass) — not the straight GPS line.
+    heading_ab = Column(Float, nullable=True)
+    # Compass degrees when leaving to_code toward from_code along the real walk.
+    heading_ba = Column(Float, nullable=True)
+    # corridor | door | glass_door | passage — doors need open/closed handling.
+    passage_kind = Column(String(32), nullable=False, default="corridor")
+    # none | open | closed | unknown — closed doors are not used for routing.
+    door_state = Column(String(16), nullable=False, default="none")
+    # Dynamic block (barricade, temporary structure, reported obstacle).
+    blocked = Column(Boolean, nullable=False, default=False)
+    # Optional obstacle label for staff: wall | glass | desk | barricade | …
+    obstacle_note = Column(String(64), nullable=True)
+    # Physical clearance along the path (m). Low clearance raises path cost.
+    clearance_m = Column(Float, nullable=True)
+    # Extra cost multiplier (≥1). Used for safety buffer / hard segments.
+    cost_mult = Column(Float, nullable=False, default=1.0)
+    # Volunteer walked this corridor once — trusted walkable path.
+    verified = Column(Boolean, nullable=False, default=False)
+    verified_at = Column(DateTime, nullable=True)
+    # JSON list of {lat, lon, heading_deg?} samples along the real walk.
+    path_json = Column(Text, nullable=True)
 
 
 class AuditPhoto(Base):
@@ -101,6 +123,47 @@ def _ensure_sqlite_columns():
             conn.execute(
                 text("ALTER TABLE qr_nodes ADD COLUMN local_name VARCHAR(128)")
             )
+
+        edge_rows = conn.execute(text("PRAGMA table_info(edges)")).fetchall()
+        edge_names = {r[1] for r in edge_rows}
+        if "heading_ab" not in edge_names:
+            conn.execute(text("ALTER TABLE edges ADD COLUMN heading_ab FLOAT"))
+        if "heading_ba" not in edge_names:
+            conn.execute(text("ALTER TABLE edges ADD COLUMN heading_ba FLOAT"))
+        if "passage_kind" not in edge_names:
+            conn.execute(
+                text(
+                    "ALTER TABLE edges ADD COLUMN passage_kind VARCHAR(32) DEFAULT 'corridor'"
+                )
+            )
+        if "door_state" not in edge_names:
+            conn.execute(
+                text(
+                    "ALTER TABLE edges ADD COLUMN door_state VARCHAR(16) DEFAULT 'none'"
+                )
+            )
+        if "blocked" not in edge_names:
+            conn.execute(
+                text("ALTER TABLE edges ADD COLUMN blocked BOOLEAN DEFAULT 0")
+            )
+        if "obstacle_note" not in edge_names:
+            conn.execute(
+                text("ALTER TABLE edges ADD COLUMN obstacle_note VARCHAR(64)")
+            )
+        if "clearance_m" not in edge_names:
+            conn.execute(text("ALTER TABLE edges ADD COLUMN clearance_m FLOAT"))
+        if "cost_mult" not in edge_names:
+            conn.execute(
+                text("ALTER TABLE edges ADD COLUMN cost_mult FLOAT DEFAULT 1.0")
+            )
+        if "verified" not in edge_names:
+            conn.execute(
+                text("ALTER TABLE edges ADD COLUMN verified BOOLEAN DEFAULT 0")
+            )
+        if "verified_at" not in edge_names:
+            conn.execute(text("ALTER TABLE edges ADD COLUMN verified_at DATETIME"))
+        if "path_json" not in edge_names:
+            conn.execute(text("ALTER TABLE edges ADD COLUMN path_json TEXT"))
 
 
 def get_db():

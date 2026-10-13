@@ -26,13 +26,13 @@ Future<void> main() async {
           create: (_) => NavigationController(packStore: packStore, pdr: pdr),
         ),
       ],
-      child: const SetuPilgrimApp(),
+      child: const SetuVisitorApp(),
     ),
   );
 }
 
-class SetuPilgrimApp extends StatelessWidget {
-  const SetuPilgrimApp({super.key});
+class SetuVisitorApp extends StatelessWidget {
+  const SetuVisitorApp({super.key});
 
   @override
   Widget build(BuildContext context) {

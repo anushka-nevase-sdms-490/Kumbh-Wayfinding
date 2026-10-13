@@ -44,6 +44,22 @@
   font: inherit;
 }
 
+.volunteer-form select {
+  border: 1px solid rgba(20, 32, 28, 0.18);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #fff;
+  font: inherit;
+}
+
+.field-hint {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--mute);
+}
+
 .coord-block {
   padding: 14px;
   border-radius: 16px;
@@ -51,6 +67,16 @@
   border: 1px solid rgba(26, 95, 90, 0.15);
   display: grid;
   gap: 10px;
+}
+
+.path-route-block {
+  border: 1px solid rgba(20, 32, 28, 0.18);
+  background: rgba(240, 160, 90, 0.08);
+}
+
+.path-route-block input:disabled {
+  opacity: 0.9;
+  cursor: default;
 }
 
 .coord-fields {
@@ -187,6 +213,25 @@
   line-height: 1.4;
   color: var(--mute);
   max-width: 22ch;
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.92rem;
+  color: var(--ink, #14201c);
+}
+
+.check-row input {
+  margin-top: 3px;
+}
+
+.volunteer-home-actions {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 280px);
+  margin-top: 8px;
 }
 
 .volunteer-phone-url {

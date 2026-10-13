@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * Device heading from browser sensors (compass / orientation / gyro).
- * Degrees clockwise from north.
+ * Device heading (degrees clockwise from north).
  *
- * Browsers only deliver motion sensors to a *secure context* (https, or
- * localhost). Over plain http on a LAN IP the listeners attach fine and then
- * never fire — so we detect that up front instead of sitting silently at 0.
+ * Sensor fusion (what your TL expects):
+ * - Gyroscope → fast, responsive turn tracking (high frequency)
+ * - Compass / absolute orientation → absolute north (corrects gyro drift)
+ *
+ * Indoor magnetometer noise is filtered; gyro is never dropped.
  */
 
 type Source = "none" | "manual" | "gyro" | "relative" | "absolute";
 
-/** Higher wins: a coarse source must never clobber a better one. */
 const RANK: Record<Source, number> = {
   none: 0,
   manual: 1,
@@ -23,20 +23,32 @@ const RANK: Record<Source, number> = {
 const LABEL: Record<Source, string> = {
   none: "Waiting for sensors",
   manual: "Manual heading",
-  gyro: "Gyroscope tracking",
+  gyro: "Gyroscope + compass",
   relative: "Device orientation",
-  absolute: "Compass heading",
+  absolute: "Compass + gyroscope",
 };
 
 const INSECURE_NOTE = "Needs https for sensors — use Turn buttons";
-const NO_SENSOR_NOTE = "No compass on this device — use Turn buttons";
+const NO_SENSOR_NOTE = "No compass/gyro on this device — use Turn buttons";
 
-/** Screen rotation, so the arrow stays right when the phone is in landscape. */
+/** How strongly compass corrects gyro (0 = gyro only, 1 = compass only). */
+const COMPASS_BLEND = 0.04;
+const PUBLISH_MS = 100;
+const DEADZONE_DEG = 2.5;
+
 function screenAngle(): number {
   const angle = window.screen?.orientation?.angle;
   if (typeof angle === "number") return angle;
   const legacy = (window as unknown as { orientation?: number }).orientation;
   return typeof legacy === "number" ? legacy : 0;
+}
+
+function norm360(deg: number) {
+  return ((deg % 360) + 360) % 360;
+}
+
+function shortestDelta(from: number, to: number) {
+  return ((to - from + 540) % 360) - 180;
 }
 
 export function useDeviceHeading() {
@@ -46,97 +58,106 @@ export function useDeviceHeading() {
   const [source, setSource] = useState<Source>("none");
   const [note, setNote] = useState(secure ? LABEL.none : INSECURE_NOTE);
 
-  // Read inside event handlers without re-subscribing on every update.
   const sourceRef = useRef<Source>("none");
-  const headingRef = useRef(0);
+  const fusedRef = useRef(0);
+  const publishedRef = useRef(0);
   const lastPublishRef = useRef(0);
+  const lastGyroTs = useRef<number | null>(null);
+  const lastCompassRef = useRef<number | null>(null);
+  const manualUntilRef = useRef(0);
 
-  const publish = useCallback((deg: number, next: Source) => {
-    if (RANK[next] < RANK[sourceRef.current]) return;
-    const incoming = ((deg % 360) + 360) % 360;
-    const prev = headingRef.current;
-    let delta = incoming - prev;
-    if (delta > 180) delta -= 360;
-    if (delta < -180) delta += 360;
-    let smoothed = incoming;
-    if (RANK[sourceRef.current] >= RANK.relative) {
-      if (Math.abs(delta) > 55) {
-        smoothed = (prev + Math.sign(delta) * 6 + 360) % 360;
-      } else {
-        smoothed = (prev + delta * 0.18 + 360) % 360;
-      }
-    }
-    headingRef.current = smoothed;
-    sourceRef.current = next;
-
+  const publishUi = useCallback((deg: number, next: Source) => {
     const now = performance.now();
-    if (now - lastPublishRef.current < 90) return;
+    if (now - lastPublishRef.current < PUBLISH_MS) return;
+    if (Math.abs(shortestDelta(publishedRef.current, deg)) < DEADZONE_DEG) return;
+
     lastPublishRef.current = now;
-    setSource(next);
-    setNote(LABEL[next]);
-    setHeading(smoothed);
+    publishedRef.current = deg;
+    if (RANK[next] >= RANK[sourceRef.current]) sourceRef.current = next;
+    setSource(sourceRef.current);
+    setNote(LABEL[sourceRef.current] === LABEL.gyro ? LABEL.gyro : LABEL[sourceRef.current]);
+    // Prefer a combined label when both are active.
+    if (lastCompassRef.current != null && sourceRef.current === "gyro") {
+      setNote("Gyroscope + compass");
+    } else if (sourceRef.current === "absolute") {
+      setNote("Compass + gyroscope");
+    }
+    setHeading(deg);
   }, []);
 
   useEffect(() => {
     if (!secure) return;
 
-    let gyroHeading = 0;
-    let lastTs: number | null = null;
-
     const onOrientation = (e: DeviceOrientationEvent) => {
-      // iOS gives a true compass bearing directly.
+      if (performance.now() < manualUntilRef.current) return;
+
       const compass = (
         e as DeviceOrientationEvent & { webkitCompassHeading?: number }
       ).webkitCompassHeading;
+
+      let compassDeg: number | null = null;
       if (typeof compass === "number" && !Number.isNaN(compass)) {
-        publish(compass, "absolute");
-        return;
+        compassDeg = norm360(compass);
+      } else if (typeof e.alpha === "number" && !Number.isNaN(e.alpha)) {
+        const absolute =
+          e.absolute === true || e.type === "deviceorientationabsolute";
+        // Only trust absolute / iOS compass for north; relative alpha is OK to
+        // seed fusion until gyro+compass lock.
+        compassDeg = norm360(360 - e.alpha + screenAngle());
+        if (!absolute && lastCompassRef.current == null) {
+          // Seed fused heading once so gyro has a starting point.
+          fusedRef.current = compassDeg;
+          publishUi(compassDeg, "relative");
+          return;
+        }
+        if (!absolute) return;
       }
 
-      if (typeof e.alpha !== "number" || Number.isNaN(e.alpha)) return;
+      if (compassDeg == null) return;
 
-      // alpha counts anticlockwise from north; a heading counts clockwise.
-      const deg = 360 - e.alpha + screenAngle();
-
-      // Plenty of Android phones report absolute:false on `deviceorientation`
-      // but still track rotation usefully — accept it as a lower-ranked source
-      // rather than ignoring it, which is what froze the arrow before.
-      publish(deg, e.absolute || e.type === "deviceorientationabsolute" ? "absolute" : "relative");
+      lastCompassRef.current = compassDeg;
+      // Complementary filter: pull fused heading gently toward compass north.
+      const delta = shortestDelta(fusedRef.current, compassDeg);
+      fusedRef.current = norm360(fusedRef.current + delta * COMPASS_BLEND);
+      publishUi(fusedRef.current, "absolute");
     };
 
     const onMotion = (e: DeviceMotionEvent) => {
-      // Last resort: integrate yaw rate. Responds to turning, but drifts and
-      // is not north-referenced, so it stays below the orientation sources.
+      if (performance.now() < manualUntilRef.current) return;
+
       const rot = e.rotationRate;
       if (!rot || rot.alpha == null) return;
+
       const now = performance.now();
-      if (lastTs != null) {
-        const dt = Math.min((now - lastTs) / 1000, 0.5);
-        gyroHeading = gyroHeading - rot.alpha * dt;
-        publish(gyroHeading, "gyro");
+      if (lastGyroTs.current != null) {
+        const dt = Math.min((now - lastGyroTs.current) / 1000, 0.08);
+        // rotationRate.alpha: deg/s around Z; subtract so turn-right increases heading.
+        fusedRef.current = norm360(fusedRef.current - rot.alpha * dt);
+        publishUi(fusedRef.current, "gyro");
       }
-      lastTs = now;
+      lastGyroTs.current = now;
     };
 
-    window.addEventListener("deviceorientationabsolute", onOrientation);
-    window.addEventListener("deviceorientation", onOrientation);
-    window.addEventListener("devicemotion", onMotion);
+    window.addEventListener("deviceorientationabsolute", onOrientation, true);
+    window.addEventListener("deviceorientation", onOrientation, true);
+    window.addEventListener("devicemotion", onMotion, true);
 
-    // Nothing at all after a moment means the device has no usable sensors —
-    // say so instead of leaving "Waiting for sensors" up forever.
     const idle = window.setTimeout(() => {
       if (sourceRef.current === "none") setNote(NO_SENSOR_NOTE);
-    }, 2500);
+    }, 3000);
 
     return () => {
-      window.removeEventListener("deviceorientationabsolute", onOrientation);
-      window.removeEventListener("deviceorientation", onOrientation);
-      window.removeEventListener("devicemotion", onMotion);
+      window.removeEventListener(
+        "deviceorientationabsolute",
+        onOrientation,
+        true
+      );
+      window.removeEventListener("deviceorientation", onOrientation, true);
+      window.removeEventListener("devicemotion", onMotion, true);
       window.clearTimeout(idle);
     };
-  }, [secure, publish]);
+  }, [secure, publishUi]);
 
-  /** iOS 13+ needs an explicit grant, triggered from a user gesture. */
   const requestPermission = useCallback(async () => {
     if (!secure) {
       setNote(INSECURE_NOTE);
@@ -148,32 +169,30 @@ export function useDeviceHeading() {
     const DME = DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<PermissionState>;
     };
-    // Android has no such API — permission is implicit, so don't claim
-    // anything happened; the listeners above will report the real state.
-    if (typeof DOE.requestPermission !== "function") return;
     try {
-      const granted = await DOE.requestPermission();
+      if (typeof DOE.requestPermission === "function") {
+        const granted = await DOE.requestPermission();
+        if (granted !== "granted") {
+          setNote("Sensor permission denied — use Turn buttons");
+          return;
+        }
+      }
       if (typeof DME.requestPermission === "function") {
         await DME.requestPermission();
-      }
-      if (granted !== "granted") {
-        setNote("Sensor permission denied — use Turn buttons");
       }
     } catch {
       setNote("Sensor permission denied — use Turn buttons");
     }
   }, [secure]);
 
-  /** Turn left / Turn right buttons. */
   const nudge = useCallback((delta: number) => {
-    // A live sensor would overwrite this on its next event, so only let the
-    // buttons drive the arrow while nothing better is running.
-    if (RANK[sourceRef.current] > RANK.manual) return;
+    manualUntilRef.current = performance.now() + 2000;
     sourceRef.current = "manual";
-    headingRef.current = (headingRef.current + delta + 360) % 360;
+    fusedRef.current = norm360(fusedRef.current + delta);
+    publishedRef.current = fusedRef.current;
     setSource("manual");
-    setNote((n) => (n === INSECURE_NOTE || n === NO_SENSOR_NOTE ? n : LABEL.manual));
-    setHeading(headingRef.current);
+    setNote(LABEL.manual);
+    setHeading(fusedRef.current);
   }, []);
 
   return {

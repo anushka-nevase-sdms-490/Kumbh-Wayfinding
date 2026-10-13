@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeCanvas } from "qrcode.react";
 import { locationBoardLink, type QrNode } from "../lib/types";
 import { usePhoneAppBase } from "../hooks/usePhoneAppBase";
+import { useDeviceHeading } from "../hooks/useDeviceHeading";
 import "./Volunteer.css";
 
 type Props = {
@@ -18,6 +19,13 @@ type GpsState =
 
 type DupInfo = { message: string; name?: string; code?: string };
 
+type Waypoint = {
+  lat: number;
+  lon: number;
+  heading_deg: number;
+  t_ms: number;
+};
+
 function isSecureEnough(): boolean {
   if (typeof window === "undefined") return false;
   if (window.isSecureContext) return true;
@@ -31,8 +39,10 @@ export function VolunteerRegisterForm({
   onRegistered,
 }: Props) {
   const phoneOrigin = usePhoneAppBase();
+  const heading = useDeviceHeading();
   const [locationName, setLocationName] = useState("");
   const [localName, setLocalName] = useState("");
+  const [placeKind, setPlaceKind] = useState("ghat");
   const [latText, setLatText] = useState("");
   const [lonText, setLonText] = useState("");
   const [gps, setGps] = useState<GpsState>({ status: "idle" });
@@ -40,7 +50,15 @@ export function VolunteerRegisterForm({
   const [formError, setFormError] = useState<string | null>(null);
   const [dup, setDup] = useState<DupInfo | null>(null);
   const [done, setDone] = useState<QrNode | null>(null);
+  const [existingPlaces, setExistingPlaces] = useState<QrNode[]>([]);
+  const [connectTo, setConnectTo] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+  const [pathSaved, setPathSaved] = useState(false);
   const printRef = useRef<HTMLDivElement>(null);
+  const watchRef = useRef<number | null>(null);
+  const headingRef = useRef(heading.heading);
+  headingRef.current = heading.heading;
 
   const requestGps = useCallback(() => {
     if (!isSecureEnough()) {
@@ -85,6 +103,99 @@ export function VolunteerRegisterForm({
     requestGps();
   }, [requestGps]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/pack/latest/json`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { nodes?: QrNode[] };
+        const list = (data.nodes ?? [])
+          .filter((n) => n.code.trim().toUpperCase() !== "VOLUNTEER_REGISTER")
+          .sort((a, b) => a.name.localeCompare(b.name));
+        if (!cancelled) {
+          setExistingPlaces(list);
+          if (list.length === 1) setConnectTo(list[0].code);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase]);
+
+  const stopWatch = useCallback(() => {
+    if (watchRef.current != null) {
+      navigator.geolocation.clearWatch(watchRef.current);
+      watchRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => stopWatch(), [stopWatch]);
+
+  const connectName =
+    existingPlaces.find((n) => n.code === connectTo)?.name ?? connectTo;
+
+  function startPathRecording() {
+    setFormError(null);
+    if (!connectTo) {
+      setFormError("Select the previous board first.");
+      return;
+    }
+    if (!navigator.geolocation) {
+      setFormError("GPS is required to record the verified path.");
+      return;
+    }
+    if (!isSecureEnough()) {
+      setFormError("Open the HTTPS (ngrok) link so GPS and compass work.");
+      return;
+    }
+    void heading.requestPermission();
+    setWaypoints([]);
+    setRecording(true);
+    watchRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        const next: Waypoint = {
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          heading_deg: headingRef.current,
+          t_ms: Date.now(),
+        };
+        setWaypoints((prev) => {
+          if (prev.length === 0) return [next];
+          const last = prev[prev.length - 1];
+          const dt = next.t_ms - last.t_ms;
+          const moved =
+            Math.hypot(
+              (next.lat - last.lat) * 111320,
+              (next.lon - last.lon) *
+                111320 *
+                Math.cos((next.lat * Math.PI) / 180)
+            ) > 1.5;
+          if (dt < 2000 && !moved) return prev;
+          return [...prev, next];
+        });
+      },
+      (e) => {
+        setFormError(
+          e.code === e.PERMISSION_DENIED
+            ? "Allow location to record the walk."
+            : `GPS error: ${e.message}`
+        );
+      },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+    );
+  }
+
+  function stopPathRecording() {
+    stopWatch();
+    setRecording(false);
+    // Refresh GPS at the end of the walk (new board position).
+    requestGps();
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
@@ -104,9 +215,28 @@ export function VolunteerRegisterForm({
       setFormError("Please enter Location Name and Local Name.");
       return;
     }
+    if (existingPlaces.length > 0 && !connectTo) {
+      setFormError("Choose a Starting point (the board you walk from).");
+      return;
+    }
+    if (existingPlaces.length > 0 && waypoints.length < 2) {
+      setFormError(
+        "Record the lane: stand at the starting place, start recording, walk the mela lane to the destination, stop, then submit."
+      );
+      return;
+    }
+    if (recording) {
+      setFormError("Stop path recording before submitting.");
+      return;
+    }
 
     setSubmitting(true);
     try {
+      const pathHeading =
+        waypoints.length > 0
+          ? waypoints[waypoints.length - 1].heading_deg
+          : null;
+
       const res = await fetch(`${apiBase}/api/volunteer/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -115,7 +245,9 @@ export function VolunteerRegisterForm({
           local_name: localName.trim(),
           lat,
           lon,
-          node_type: "landmark",
+          node_type: placeKind,
+          connect_to_code: connectTo || null,
+          path_heading_deg: pathHeading,
         }),
       });
       const data = await res.json();
@@ -135,8 +267,30 @@ export function VolunteerRegisterForm({
         });
         return;
       }
-      setDone(data.node as QrNode);
-      onRegistered(data.node as QrNode);
+
+      const node = data.node as QrNode;
+      let verified = false;
+      if (connectTo && waypoints.length >= 2) {
+        try {
+          const pr = await fetch(`${apiBase}/api/volunteer/record-path`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              from_code: connectTo,
+              to_code: node.code,
+              waypoints,
+            }),
+          });
+          const pdata = await pr.json();
+          verified = pr.ok && !!pdata.success;
+        } catch {
+          verified = false;
+        }
+      }
+
+      setPathSaved(verified);
+      setDone(node);
+      onRegistered(node);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Network error");
     } finally {
@@ -203,6 +357,18 @@ export function VolunteerRegisterForm({
             {done.lon.toFixed(6)}
             <br />
             <strong>QR Code:</strong> {done.code}
+            {pathSaved && (
+              <>
+                <br />
+                <strong>Verified path:</strong> saved ({waypoints.length}{" "}
+                samples)
+              </>
+            )}
+          </p>
+
+          <p className="field-hint no-print">
+            Path turns a corner? Register another board at the corner and record
+            that walk too.
           </p>
 
           <div className="volunteer-qr-print" id="volunteer-print-area">
@@ -260,14 +426,14 @@ export function VolunteerRegisterForm({
           ←
         </button>
         <div>
-          <h2>Register Location</h2>
-          <p>Stand at the place, allow GPS, then submit</p>
+          <h2>Register a Kumbh place</h2>
+          <p>Ghat, akhara, camp, or gate — then walk the mela lane</p>
         </div>
       </header>
 
       <form className="volunteer-form" onSubmit={onSubmit}>
         <label>
-          Location Name
+          Place name
           <input
             value={locationName}
             onChange={(e) => setLocationName(e.target.value)}
@@ -276,8 +442,34 @@ export function VolunteerRegisterForm({
           />
         </label>
 
+        <label>
+          Kind of place
+          <select value={placeKind} onChange={(e) => setPlaceKind(e.target.value)}>
+            <option value="ghat">Ghat</option>
+            <option value="akhara">Akhara</option>
+            <option value="medical">Medical camp</option>
+            <option value="toilet">Toilet block</option>
+            <option value="parking">Parking</option>
+            <option value="lost_found">Lost and found</option>
+            <option value="transport">Transport hub</option>
+            <option value="help">Help desk</option>
+            <option value="junction">Lane corner</option>
+            <option value="landmark">Other landmark</option>
+          </select>
+        </label>
+
+        <label>
+          Local name
+          <input
+            value={localName}
+            onChange={(e) => setLocalName(e.target.value)}
+            placeholder="e.g. राम कुंड"
+            required
+          />
+        </label>
+
         <div className="coord-block">
-          <p className="section-label">Coordinates (from device GPS)</p>
+          <p className="section-label">Destination GPS (stand here at the end)</p>
           {gps.status === "loading" && (
             <p className="gps-status">Getting your current location…</p>
           )}
@@ -318,30 +510,141 @@ export function VolunteerRegisterForm({
             type="button"
             className="btn soft block"
             onClick={requestGps}
-            disabled={gps.status === "loading"}
+            disabled={gps.status === "loading" || recording}
           >
             {gps.status === "loading" ? "Getting GPS…" : "Retry location"}
           </button>
         </div>
 
-        <label>
-          Local Name
-          <input
-            value={localName}
-            onChange={(e) => setLocalName(e.target.value)}
-            placeholder="e.g. Ram Kund"
-            required
-          />
-        </label>
+        {existingPlaces.length > 0 && (
+          <div className="coord-block path-route-block">
+            <p className="section-label">Record path (start → destination)</p>
+            <p className="field-hint">
+              There is no mela map. Walk the real lane once, around crowds,
+              barricades, and tents. Visitors are guided along that walk.
+            </p>
+
+            <label>
+              Starting point
+              <select
+                value={connectTo}
+                onChange={(e) => {
+                  setConnectTo(e.target.value);
+                  setWaypoints([]);
+                  stopPathRecording();
+                }}
+                required
+                disabled={recording}
+              >
+                <option value="">Select starting board…</option>
+                {existingPlaces.map((n) => (
+                  <option key={n.code} value={n.code}>
+                    {n.name}
+                    {n.local_name ? ` (${n.local_name})` : ""} — {n.code}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Destination
+              <input
+                value={
+                  locationName.trim()
+                    ? `${locationName.trim()}${
+                        localName.trim() ? ` (${localName.trim()})` : ""
+                      } — new board`
+                    : "Type Destination name above…"
+                }
+                readOnly
+                disabled
+              />
+            </label>
+
+            {connectTo && (
+              <>
+                <p className="gps-status">
+                  Route: <strong>{connectName}</strong> →{" "}
+                  <strong>
+                    {locationName.trim() || "Destination (new board)"}
+                  </strong>
+                </p>
+                <p className="field-hint">
+                  1) Stand at <strong>Starting point</strong> ({connectName})
+                  <br />
+                  2) Tap <strong>Start recording walk</strong>
+                  <br />
+                  3) Walk to the <strong>destination</strong> along the real mela lane, around tents and barricades.
+                  <br />
+                  4) Tap <strong>Stop recording</strong>, check GPS, Submit
+                </p>
+                <p className="gps-status">
+                  Compass: {heading.heading.toFixed(0)}° · {heading.note}
+                  {recording
+                    ? ` · recording (${waypoints.length} samples)`
+                    : waypoints.length >= 2
+                      ? ` · path ready (${waypoints.length} samples)`
+                      : ""}
+                </p>
+                {!heading.secure && (
+                  <p className="gps-status err">
+                    Needs HTTPS (ngrok) for compass — use phone link with
+                    padlock.
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="btn soft block"
+                  onClick={() => void heading.requestPermission()}
+                >
+                  Enable compass / gyroscope
+                </button>
+                {!recording ? (
+                  <button
+                    type="button"
+                    className="btn primary block"
+                    onClick={startPathRecording}
+                  >
+                    Start recording walk
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn secondary block"
+                    onClick={stopPathRecording}
+                  >
+                    Stop recording ({waypoints.length} samples)
+                  </button>
+                )}
+                {waypoints.length >= 2 && !recording && (
+                  <p className="gps-status ok">
+                    ✓ Path recorded — obstacles avoided by your walk
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {existingPlaces.length === 0 && (
+          <p className="field-hint">
+            First board: no path yet. After this, register the next place and
+            record Starting point → Destination.
+          </p>
+        )}
 
         {formError && <p className="gps-status err">{formError}</p>}
 
         <button
           type="submit"
           className="btn primary block"
-          disabled={submitting || !coordsReady}
+          disabled={submitting || !coordsReady || recording}
         >
-          {submitting ? "Submitting…" : "Submit"}
+          {submitting
+            ? "Saving…"
+            : existingPlaces.length > 0
+              ? "Save destination + recorded path"
+              : "Save destination"}
         </button>
       </form>
     </section>
