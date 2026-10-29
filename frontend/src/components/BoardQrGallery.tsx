@@ -29,6 +29,16 @@ export function BoardQrGallery({ nodes, onBack, onUseAsStart }: Props) {
         </div>
       </div>
 
+      {nodes.length === 0 && (
+        <div className="empty-state">
+          <strong>No boards yet</strong>
+          <p>
+            Boards appear here after a volunteer registers a place. Go back,
+            choose “I am a volunteer”, then “Register a mela place”.
+          </p>
+        </div>
+      )}
+
       <div className="qr-gallery-grid">
         {nodes.map((n) => {
           const link = locationBoardLink(n.code, phoneOrigin);

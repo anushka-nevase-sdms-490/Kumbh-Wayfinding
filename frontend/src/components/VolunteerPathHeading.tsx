@@ -17,8 +17,10 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
   const heading = useDeviceHeading();
   const [nodes, setNodes] = useState<QrNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
-  const [fromCode, setFromCode] = useState("");
-  const [toCode, setToCode] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [laneKey, setLaneKey] = useState("");
+  // Which end of the lane the volunteer stands at; they face the other end.
+  const [standAtA, setStandAtA] = useState(true);
   const [captured, setCaptured] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -40,13 +42,11 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
         if (!cancelled) {
           setNodes(list);
           setEdges(data.edges ?? []);
-          if (list.length >= 2) {
-            setFromCode(list[0].code);
-            setToCode(list[1].code);
-          }
         }
       } catch {
         /* ignore */
+      } finally {
+        if (!cancelled) setLoaded(true);
       }
     })();
     return () => {
@@ -60,12 +60,13 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
 
   const linkedPairs = useMemo(() => {
     const codes = new Set(nodes.map((n) => n.code.toUpperCase()));
-    const pairs: { a: string; b: string; hasHeading: boolean }[] = [];
+    const pairs: { key: string; a: string; b: string; hasHeading: boolean }[] = [];
     for (const e of edges) {
       const A = e.from_code.toUpperCase();
       const B = e.to_code.toUpperCase();
       if (!codes.has(A) || !codes.has(B)) continue;
       pairs.push({
+        key: `${A}|${B}`,
         a: e.from_code,
         b: e.to_code,
         hasHeading:
@@ -75,11 +76,16 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
     return pairs;
   }, [edges, nodes]);
 
+  const lane = linkedPairs.find((p) => p.key === laneKey) ?? null;
+  // API naming: to_code = board you stand at, from_code = board you face.
+  const toCode = lane ? (standAtA ? lane.a : lane.b) : "";
+  const fromCode = lane ? (standAtA ? lane.b : lane.a) : "";
+
   async function save() {
     setErr(null);
     setMsg(null);
-    if (!fromCode || !toCode || fromCode === toCode) {
-      setErr("Pick two different boards that are walk-linked.");
+    if (!lane) {
+      setErr("Choose a lane first.");
       return;
     }
     if (captured == null) {
@@ -129,60 +135,65 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
         </div>
       </header>
 
+      {loaded && linkedPairs.length === 0 ? (
+        <div className="empty-state">
+          <strong>No walked lanes yet</strong>
+          <p>
+            Register at least two places and record the walk between them.
+            Their lane then appears here.
+          </p>
+        </div>
+      ) : (
       <div className="volunteer-form">
         <p className="field-hint">
-          Stand at the board you are leaving <strong>from</strong> in the
-          picker below labeled “Standing at”, face the phone along the walkable
-          path toward the other board (around obstacles), then capture.
+          Choose a lane, pick the board you are standing at, face the phone
+          along the real walk toward the other board, then capture. ✓ means the
+          lane already has a direction.
         </p>
 
-        {linkedPairs.length > 0 && (
-          <p className="gps-status">
-            Linked paths:{" "}
-            {linkedPairs
-              .map(
-                (p) =>
-                  `${nameOf(p.a)} ↔ ${nameOf(p.b)}${p.hasHeading ? " ✓" : " (no heading yet)"}`
-              )
-              .join(" · ")}
-          </p>
+        <label>
+          Lane
+          <select
+            value={laneKey}
+            onChange={(e) => {
+              setLaneKey(e.target.value);
+              setStandAtA(true);
+              setCaptured(null);
+              setMsg(null);
+            }}
+          >
+            <option value="" disabled>
+              Choose a lane…
+            </option>
+            {linkedPairs.map((p) => (
+              <option key={p.key} value={p.key}>
+                {nameOf(p.a)} ↔ {nameOf(p.b)}
+                {p.hasHeading ? " ✓" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {lane && (
+          <label>
+            I am standing at
+            <select
+              value={standAtA ? "a" : "b"}
+              onChange={(e) => {
+                setStandAtA(e.target.value === "a");
+                setCaptured(null);
+                setMsg(null);
+              }}
+            >
+              <option value="a">{nameOf(lane.a)}</option>
+              <option value="b">{nameOf(lane.b)}</option>
+            </select>
+            <span className="field-hint">
+              Face the phone toward <strong>{nameOf(fromCode)}</strong> along the
+              lane, then capture.
+            </span>
+          </label>
         )}
-
-        <label>
-          Other board (walk toward)
-          <select
-            value={fromCode}
-            onChange={(e) => {
-              setFromCode(e.target.value);
-              setCaptured(null);
-              setMsg(null);
-            }}
-          >
-            {nodes.map((n) => (
-              <option key={n.code} value={n.code}>
-                {n.name} — {n.code}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          Standing at (this board)
-          <select
-            value={toCode}
-            onChange={(e) => {
-              setToCode(e.target.value);
-              setCaptured(null);
-              setMsg(null);
-            }}
-          >
-            {nodes.map((n) => (
-              <option key={n.code} value={n.code}>
-                {n.name} — {n.code}
-              </option>
-            ))}
-          </select>
-        </label>
 
         <div className="coord-block">
           <p className="section-label">Compass along the walk</p>
@@ -226,7 +237,7 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
         <button
           type="button"
           className="btn primary block"
-          disabled={busy || captured == null}
+          disabled={busy || captured == null || !lane}
           onClick={() => void save()}
         >
           {busy ? "Saving…" : "Save walk direction"}
@@ -237,6 +248,7 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
           per straight stretch of the mela lane.
         </p>
       </div>
+      )}
     </section>
   );
 }

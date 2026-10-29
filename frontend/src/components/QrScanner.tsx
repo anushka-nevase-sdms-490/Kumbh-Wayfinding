@@ -21,7 +21,7 @@ export function QrScanner({
   title = "Scan QR board",
   helpText = "Allow the camera. Point at a Kumbh board QR on a ghat, gate, or camp.",
   readerId = "routefinding-qr-reader",
-  placeholder = "e.g. SETU-A01",
+  placeholder = "e.g. KUMBH-A01",
 }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState(false);

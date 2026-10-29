@@ -1,40 +1,39 @@
-"""Seed a small demo site graph (campus-scale) for offline testing."""
+"""Boot-time data setup.
 
+No demo places are seeded: volunteers register real Nashik Kumbh boards
+(official places from kumbhguidenashik.in/map, plus lane corners) and walk
+the lanes between them. Older databases still hold the fictional SETU-*
+demo grid, so it is removed here.
+"""
+
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .db import Edge, QrNode, SessionLocal, init_db
-from .services.pack_builder import build_offline_pack, haversine_m
+from .db import AuditPhoto, Edge, PackVersion, QrNode, SessionLocal, init_db
+from .services.pack_builder import build_offline_pack
 
-# Demo grid near Nashik Godavari (approx) — for local demos use relative campus coords.
-# These are fictional micro-site points ~40–60 m apart.
-SEED_NODES = [
-    {"code": "SETU-A01", "name": "Ram Kund Ghat", "lat": 19.9975, "lon": 73.7898, "node_type": "ghat", "icon": "ghat"},
-    {"code": "SETU-A02", "name": "Triveni lane turn", "lat": 19.9978, "lon": 73.7902, "node_type": "junction", "icon": "junction"},
-    {"code": "SETU-A03", "name": "Sector medical camp", "lat": 19.9981, "lon": 73.7905, "node_type": "medical", "icon": "medical"},
-    {"code": "SETU-B01", "name": "Mela toilet block", "lat": 19.9972, "lon": 73.7901, "node_type": "toilet", "icon": "toilet"},
-    {"code": "SETU-B02", "name": "Mela help desk", "lat": 19.9976, "lon": 73.7906, "node_type": "help", "icon": "help"},
-    {"code": "SETU-C01", "name": "Sector parking", "lat": 19.9969, "lon": 73.7895, "node_type": "parking", "icon": "parking"},
-    {"code": "SETU-C02", "name": "Lost and found", "lat": 19.9980, "lon": 73.7896, "node_type": "lost_found", "icon": "lost_found"},
-    {"code": "SETU-D01", "name": "Mela bus stand", "lat": 19.9968, "lon": 73.7904, "node_type": "transport", "icon": "transport"},
-    {"code": "SETU-E01", "name": "Juna Akhara", "lat": 19.9984, "lon": 73.7908, "node_type": "akhara", "icon": "akhara"},
-]
+DEMO_CODE_PREFIX = "SETU-"
 
-# Walkable connections (undirected)
-SEED_LINKS = [
-    ("SETU-A01", "SETU-A02", "paved"),
-    ("SETU-A02", "SETU-A03", "paved"),
-    ("SETU-A01", "SETU-B01", "sand"),
-    ("SETU-B01", "SETU-B02", "paved"),
-    ("SETU-A02", "SETU-B02", "paved"),
-    ("SETU-A03", "SETU-C02", "paved"),
-    ("SETU-A01", "SETU-C02", "paved"),
-    ("SETU-C01", "SETU-A01", "paved"),
-    ("SETU-C01", "SETU-B01", "sand"),
-    ("SETU-B01", "SETU-D01", "paved"),
-    ("SETU-B02", "SETU-D01", "steps"),
-    ("SETU-A02", "SETU-C02", "paved"),
-    ("SETU-A03", "SETU-E01", "paved"),
-]
+
+def _remove_demo_places(db: Session) -> int:
+    like = f"{DEMO_CODE_PREFIX}%"
+    edges = (
+        db.query(Edge)
+        .filter(or_(Edge.from_code.like(like), Edge.to_code.like(like)))
+        .delete(synchronize_session=False)
+    )
+    db.query(AuditPhoto).filter(AuditPhoto.code.like(like)).delete(
+        synchronize_session=False
+    )
+    nodes = (
+        db.query(QrNode)
+        .filter(QrNode.code.like(like))
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    if nodes or edges:
+        print(f"Removed demo data: {nodes} SETU-* places, {edges} lanes.")
+    return nodes + edges
 
 
 def seed(db: Session | None = None):
@@ -44,41 +43,10 @@ def seed(db: Session | None = None):
         db = SessionLocal()
         close = True
     try:
-        if db.query(QrNode).count() > 0:
-            print("Already seeded — skipping nodes.")
-        else:
-            for n in SEED_NODES:
-                db.add(QrNode(**n))
-            db.commit()
-            print(f"Seeded {len(SEED_NODES)} nodes.")
-
-        if db.query(Edge).count() > 0:
-            print("Already seeded — skipping edges.")
-        else:
-            by_code = {n.code: n for n in db.query(QrNode).all()}
-            for a, b, surface in SEED_LINKS:
-                na, nb = by_code[a], by_code[b]
-                dist = haversine_m(na.lat, na.lon, nb.lat, nb.lon)
-                db.add(
-                    Edge(
-                        from_code=a,
-                        to_code=b,
-                        distance_m=round(dist, 1),
-                        surface=surface,
-                        walkable=True,
-                        bidirectional=True,
-                    )
-                )
-            db.commit()
-            print(f"Seeded {len(SEED_LINKS)} edges.")
-
-        from .db import PackVersion
-
-        if db.query(PackVersion).count() == 0:
+        removed = _remove_demo_places(db)
+        if removed or db.query(PackVersion).count() == 0:
             pack, path = build_offline_pack(db)
             print(f"Built pack {pack.version} → {path}")
-        else:
-            print("Pack already exists — skipping rebuild on seed.")
     finally:
         if close:
             db.close()

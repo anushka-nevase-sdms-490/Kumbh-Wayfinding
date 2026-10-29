@@ -228,16 +228,15 @@ fi
 
 info "Setting up backend..."
 cd "$ROOT/backend"
-if [[ ! -d .venv ]]; then
+# Recreate the venv if it is missing or broken (e.g. the project folder moved).
+if ! .venv/bin/python -c "import sys" >/dev/null 2>&1; then
+  rm -rf .venv
   python3 -m venv .venv
   ok "Created backend/.venv"
 fi
-# shellcheck disable=SC1091
-source .venv/bin/activate
-pip install --upgrade pip >/dev/null
-pip install -r requirements.txt >/dev/null
+.venv/bin/python -m pip install --upgrade pip >/dev/null
+.venv/bin/python -m pip install -r requirements.txt >/dev/null
 ok "Backend packages installed"
-deactivate
 
 info "Setting up frontend..."
 cd "$ROOT/frontend"

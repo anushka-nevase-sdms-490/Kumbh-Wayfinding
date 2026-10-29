@@ -93,6 +93,7 @@ export const TYPE_META: Record<
 > = {
   ghat: { label: "Ghat", emoji: "◇", hint: "Bathing ghat" },
   akhara: { label: "Akhara", emoji: "◎", hint: "Akhara camp" },
+  tent_city: { label: "Tent city", emoji: "△", hint: "Sadhugram tent city" },
   medical: { label: "Medical", emoji: "+", hint: "Medical camp" },
   toilet: { label: "Toilet", emoji: "□", hint: "Mela toilet block" },
   parking: { label: "Parking", emoji: "P", hint: "Mela parking" },
@@ -102,6 +103,24 @@ export const TYPE_META: Record<
   junction: { label: "Lane turn", emoji: "·", hint: "Corner on the walk" },
   landmark: { label: "Landmark", emoji: "◎", hint: "Mela landmark" },
 };
+
+/** Colour family for a place icon tile — see .tone-* in index.css. */
+export function placeTone(type: string): string {
+  switch (type) {
+    case "ghat":
+      return "tone-water";
+    case "medical":
+      return "tone-medical";
+    case "parking":
+    case "transport":
+      return "tone-transit";
+    case "tent_city":
+    case "akhara":
+      return "tone-camp";
+    default:
+      return "tone-neutral";
+  }
+}
 
 export function normalizeCode(raw: string): string {
   let s = raw.trim();

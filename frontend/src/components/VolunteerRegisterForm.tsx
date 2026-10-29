@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeCanvas } from "qrcode.react";
-import { locationBoardLink, type QrNode } from "../lib/types";
+import { haversineM, locationBoardLink, type QrNode } from "../lib/types";
+import {
+  OFFICIAL_PLACES,
+  SITE_CATEGORIES,
+  siteCategory,
+  type OfficialPlace,
+} from "../lib/officialPlaces";
 import { usePhoneAppBase } from "../hooks/usePhoneAppBase";
 import { useDeviceHeading } from "../hooks/useDeviceHeading";
 import "./Volunteer.css";
@@ -55,6 +61,15 @@ export function VolunteerRegisterForm({
   const [recording, setRecording] = useState(false);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [pathSaved, setPathSaved] = useState(false);
+  const [official, setOfficial] = useState<OfficialPlace | null>(null);
+  // GPS callbacks read this so they never overwrite official coordinates.
+  const officialRef = useRef<OfficialPlace | null>(null);
+  officialRef.current = official;
+  // True only after the volunteer taps "Use my live location". Typing a
+  // coordinate switches back to manual so GPS never overwrites it.
+  const [useLive, setUseLive] = useState(false);
+  const useLiveRef = useRef(false);
+  useLiveRef.current = useLive;
   const printRef = useRef<HTMLDivElement>(null);
   const watchRef = useRef<number | null>(null);
   const headingRef = useRef(heading.heading);
@@ -82,8 +97,10 @@ export function VolunteerRegisterForm({
       (pos) => {
         const lat = pos.coords.latitude;
         const lon = pos.coords.longitude;
-        setLatText(lat.toFixed(6));
-        setLonText(lon.toFixed(6));
+        if (!officialRef.current && useLiveRef.current) {
+          setLatText(lat.toFixed(6));
+          setLonText(lon.toFixed(6));
+        }
         setGps({ status: "ok", lat, lon });
       },
       (err) => {
@@ -99,9 +116,18 @@ export function VolunteerRegisterForm({
     );
   }, []);
 
-  useEffect(() => {
+  // Browser asks for location permission only when the volunteer opts in.
+  function chooseLiveLocation() {
+    useLiveRef.current = true;
+    setUseLive(true);
     requestGps();
-  }, [requestGps]);
+  }
+
+  function typeCoordinate(setter: (v: string) => void, value: string) {
+    useLiveRef.current = false;
+    setUseLive(false);
+    setter(value);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -137,6 +163,37 @@ export function VolunteerRegisterForm({
 
   const connectName =
     existingPlaces.find((n) => n.code === connectTo)?.name ?? connectTo;
+
+  const registeredNames = new Set(
+    existingPlaces.map((n) => n.name.trim().toLowerCase())
+  );
+
+  function chooseOfficial(id: string) {
+    const place = OFFICIAL_PLACES.find((p) => p.id === id) ?? null;
+    setOfficial(place);
+    if (place) {
+      setLocationName(place.name);
+      setLocalName(place.local_name);
+      setPlaceKind(place.node_type);
+      setLatText(place.lat.toFixed(6));
+      setLonText(place.lon.toFixed(6));
+      return;
+    }
+    setLocationName("");
+    setLocalName("");
+    if (useLive && gps.status === "ok") {
+      setLatText(gps.lat.toFixed(6));
+      setLonText(gps.lon.toFixed(6));
+    } else {
+      setLatText("");
+      setLonText("");
+    }
+  }
+
+  const offsetFromOfficialM =
+    official && gps.status === "ok"
+      ? haversineM(gps.lat, gps.lon, official.lat, official.lon)
+      : null;
 
   function startPathRecording() {
     setFormError(null);
@@ -192,8 +249,9 @@ export function VolunteerRegisterForm({
   function stopPathRecording() {
     stopWatch();
     setRecording(false);
-    // Refresh GPS at the end of the walk (new board position).
-    requestGps();
+    // Refresh GPS at the end of the walk (new board position) — only if the
+    // volunteer chose live location; typed coordinates stay as typed.
+    if (useLiveRef.current) requestGps();
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -204,7 +262,7 @@ export function VolunteerRegisterForm({
     const lat = Number.parseFloat(latText);
     const lon = Number.parseFloat(lonText);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      setFormError("Enter valid latitude and longitude (or allow GPS).");
+      setFormError("Enter latitude and longitude, or tap Use my live location.");
       return;
     }
     if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
@@ -418,6 +476,15 @@ export function VolunteerRegisterForm({
   const coordsReady =
     Number.isFinite(Number.parseFloat(latText)) &&
     Number.isFinite(Number.parseFloat(lonText));
+  // Rough box around Nashik city, Trimbakeshwar and the outer parkings.
+  const outsideNashik =
+    coordsReady &&
+    !(
+      Number.parseFloat(latText) >= 19.8 &&
+      Number.parseFloat(latText) <= 20.2 &&
+      Number.parseFloat(lonText) >= 73.4 &&
+      Number.parseFloat(lonText) <= 74.0
+    );
 
   return (
     <section className="screen flow volunteer-screen">
@@ -433,20 +500,60 @@ export function VolunteerRegisterForm({
 
       <form className="volunteer-form" onSubmit={onSubmit}>
         <label>
+          Official Kumbh place
+          <select
+            value={official?.id ?? ""}
+            onChange={(e) => chooseOfficial(e.target.value)}
+            disabled={recording}
+          >
+            <option value="">Other place…</option>
+            {SITE_CATEGORIES.map((c) => {
+              const places = OFFICIAL_PLACES.filter(
+                (p) => siteCategory(p.node_type) === c.id
+              );
+              if (places.length === 0) return null;
+              return (
+                <optgroup key={c.id} label={c.label}>
+                  {places.map((p) => {
+                    const taken = registeredNames.has(p.name.toLowerCase());
+                    return (
+                      <option key={p.id} value={p.id} disabled={taken}>
+                        {p.name} — {p.local_name}
+                        {taken ? " (already added)" : ""}
+                      </option>
+                    );
+                  })}
+                </optgroup>
+              );
+            })}
+          </select>
+        </label>
+        <p className="field-hint">
+          Pick an official place to fill the details, or choose “Other place”
+          for lane corners, camps, and help desks.
+        </p>
+
+        <label>
           Place name
           <input
             value={locationName}
             onChange={(e) => setLocationName(e.target.value)}
             placeholder="e.g. Ram Kund Ghat"
+            readOnly={!!official}
             required
           />
         </label>
 
         <label>
           Kind of place
-          <select value={placeKind} onChange={(e) => setPlaceKind(e.target.value)}>
+          <select
+            value={placeKind}
+            onChange={(e) => setPlaceKind(e.target.value)}
+            disabled={!!official}
+          >
             <option value="ghat">Ghat</option>
             <option value="akhara">Akhara</option>
+            <option value="tent_city">Tent city</option>
             <option value="medical">Medical camp</option>
             <option value="toilet">Toilet block</option>
             <option value="parking">Parking</option>
@@ -469,18 +576,35 @@ export function VolunteerRegisterForm({
         </label>
 
         <div className="coord-block">
-          <p className="section-label">Destination GPS (stand here at the end)</p>
-          {gps.status === "loading" && (
+          <p className="section-label">
+            {official
+              ? "Official coordinates"
+              : "Coordinates of this place"}
+          </p>
+          {!official && (
+            <p className="field-hint">
+              Type the latitude and longitude, or tap{" "}
+              <strong>Use my live location</strong> while standing at the place.
+              Your phone will ask for location permission.
+            </p>
+          )}
+          {official && offsetFromOfficialM != null && (
+            <p
+              className={`gps-status ${offsetFromOfficialM > 150 ? "err" : "ok"}`}
+            >
+              {offsetFromOfficialM > 150
+                ? `You are ${Math.round(offsetFromOfficialM)} m from ${official.name}. Put the board up at the place itself before saving.`
+                : `✓ You are ${Math.round(offsetFromOfficialM)} m from the official point`}
+            </p>
+          )}
+          {useLive && gps.status === "loading" && (
             <p className="gps-status">Getting your current location…</p>
           )}
-          {gps.status === "ok" && (
-            <p className="gps-status ok">✓ Location detected from GPS</p>
+          {useLive && !official && gps.status === "ok" && (
+            <p className="gps-status ok">✓ Filled from your live location</p>
           )}
-          {gps.status === "error" && (
+          {useLive && gps.status === "error" && (
             <p className="gps-status err">{gps.message}</p>
-          )}
-          {gps.status === "idle" && (
-            <p className="gps-status">Waiting to request location…</p>
           )}
 
           <div className="coord-fields">
@@ -489,8 +613,9 @@ export function VolunteerRegisterForm({
               <input
                 inputMode="decimal"
                 value={latText}
-                onChange={(e) => setLatText(e.target.value)}
+                onChange={(e) => typeCoordinate(setLatText, e.target.value)}
                 placeholder="e.g. 19.997500"
+                readOnly={!!official}
                 required
               />
             </label>
@@ -499,20 +624,34 @@ export function VolunteerRegisterForm({
               <input
                 inputMode="decimal"
                 value={lonText}
-                onChange={(e) => setLonText(e.target.value)}
+                onChange={(e) => typeCoordinate(setLonText, e.target.value)}
                 placeholder="e.g. 73.789800"
+                readOnly={!!official}
                 required
               />
             </label>
           </div>
 
+          {outsideNashik && (
+            <p className="gps-status err">
+              These coordinates are outside the Nashik Kumbh area. Check them,
+              or stand at the place and use your live location.
+            </p>
+          )}
+
           <button
             type="button"
             className="btn soft block"
-            onClick={requestGps}
-            disabled={gps.status === "loading" || recording}
+            onClick={chooseLiveLocation}
+            disabled={(useLive && gps.status === "loading") || recording}
           >
-            {gps.status === "loading" ? "Getting GPS…" : "Retry location"}
+            {useLive && gps.status === "loading"
+              ? "Getting location…"
+              : official
+                ? "Check I am at this place (live location)"
+                : useLive && gps.status === "ok"
+                  ? "Refresh live location"
+                  : "Use my live location"}
           </button>
         </div>
 

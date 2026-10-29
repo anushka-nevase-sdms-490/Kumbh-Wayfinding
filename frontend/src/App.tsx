@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { QrScanner } from "./components/QrScanner";
 import { BoardQrGallery } from "./components/BoardQrGallery";
@@ -13,12 +13,12 @@ import { useSmoothedBearing } from "./hooks/useSmoothedBearing";
 import { findRoute, edgeBetween, walkHeadingDeg, edgeKey, buildPathInstructions, validateRoute, isReachable } from "./lib/router";
 import { apiBase } from "./lib/network";
 import {
-  TYPE_META,
   bearingDeg,
   haversineM,
   isRegisteredLocation,
   isVolunteerRegisterPayload,
   normalizeCode,
+  placeTone,
   volunteerRegisterLink,
   type OfflinePack,
   type QrNode,
@@ -31,6 +31,25 @@ import {
 } from "./lib/navigation";
 import { VolunteerPathHeading } from "./components/VolunteerPathHeading";
 import { VolunteerObstacle } from "./components/VolunteerObstacle";
+import {
+  BlockIcon,
+  BoardsIcon,
+  ChevronIcon,
+  CompassIcon,
+  PinPlusIcon,
+  PlaceIcon,
+  ScanIcon,
+  VolunteerIcon,
+  WalkerIcon,
+} from "./components/Icons";
+import {
+  SITE_CATEGORIES,
+  areaOf,
+  officialPlaceFor,
+  siteCategory,
+  siteCategoryLabel,
+  type Area,
+} from "./lib/officialPlaces";
 import packFallback from "./data/pack.json";
 
 type Mode = "gate" | "user" | "volunteer";
@@ -140,6 +159,33 @@ export default function App() {
   const destinations = useMemo(
     () => registeredPlaces.filter((n) => n.code !== start?.code),
     [registeredPlaces, start]
+  );
+
+  // Area / category filters, as on kumbhguidenashik.in/map.
+  const [areaFilter, setAreaFilter] = useState<Area | "all">("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const destinationCategories = useMemo(() => {
+    const present = new Set(destinations.map((n) => siteCategory(n.node_type)));
+    return SITE_CATEGORIES.filter((c) => present.has(c.id));
+  }, [destinations]);
+  const destinationAreas = useMemo(
+    () => [...new Set(destinations.map((n) => areaOf(n)))].sort(),
+    [destinations]
+  );
+  // A filter that no longer matches any place (e.g. after changing start) acts as "all".
+  const activeArea =
+    areaFilter !== "all" && destinationAreas.includes(areaFilter) ? areaFilter : "all";
+  const activeCategory = destinationCategories.some((c) => c.id === categoryFilter)
+    ? categoryFilter
+    : "all";
+  const filteredDestinations = useMemo(
+    () =>
+      destinations.filter(
+        (n) =>
+          (activeArea === "all" || areaOf(n) === activeArea) &&
+          (activeCategory === "all" || siteCategory(n.node_type) === activeCategory)
+      ),
+    [destinations, activeArea, activeCategory]
   );
 
   const routeOptions = useMemo(
@@ -368,38 +414,49 @@ export default function App() {
     return (
       <div className="app">
         <div className="atmosphere" aria-hidden />
-        <section className="screen home">
-          <header className="home-top">
+        <section className="screen home gate">
+          <header className="hero">
+            <div className="hero-visual" aria-hidden>
+              <div className="path-glow" />
+              <DirectionArrow rotationDeg={18} size={132} />
+            </div>
+            <p className="eyebrow">Nashik Kumbh Mela 2027</p>
             <h1 className="brand">Kumbh Wayfinding</h1>
-            <p className="lead">
-              Find ghats, akharas, medical camps, and gates inside the Kumbh
-              mela. No floor plan. QR boards and walked lanes only.
-            </p>
           </header>
-          <div className="home-visual" aria-hidden>
-            <div className="path-glow" />
-            <DirectionArrow rotationDeg={18} size={180} />
-          </div>
-          <div className="home-cta gate-cta">
+          <div className="role-cards">
             <button
               type="button"
-              className="btn primary"
+              className="role-card featured"
               onClick={() => {
                 setMode("user");
                 setStep("home");
               }}
             >
-              Visitor
+              <span className="role-icon">
+                <WalkerIcon size={24} />
+              </span>
+              <span className="role-text">
+                <strong>I am a visitor</strong>
+                <small>Find my way in the mela</small>
+              </span>
+              <ChevronIcon size={20} className="role-chevron" />
             </button>
             <button
               type="button"
-              className="btn secondary"
+              className="role-card"
               onClick={() => {
                 setMode("volunteer");
                 setVolStep("home");
               }}
             >
-              Volunteer
+              <span className="role-icon">
+                <VolunteerIcon size={24} />
+              </span>
+              <span className="role-text">
+                <strong>I am a volunteer</strong>
+                <small>Register places and walk lanes</small>
+              </span>
+              <ChevronIcon size={20} className="role-chevron" />
             </button>
           </div>
         </section>
@@ -414,55 +471,72 @@ export default function App() {
         <div className="atmosphere" aria-hidden />
 
         {volStep === "home" && (
-          <section className="screen home volunteer-home-simple">
-            <header className="home-top">
+          <section className="screen flow">
+            <TopBar
+              title="Volunteer"
+              subtitle="Register Kumbh places and walk each mela lane once"
+              onBack={() => setMode("gate")}
+            />
+            <div className="action-list">
               <button
                 type="button"
-                className="back volunteer-home-back"
-                onClick={() => setMode("gate")}
-                aria-label="Back"
+                className="action-card featured"
+                onClick={() => setVolStep("register")}
               >
-                ←
+                <span className="action-icon">
+                  <PinPlusIcon />
+                </span>
+                <span className="action-text">
+                  <strong>Register a mela place</strong>
+                  <small>Add a board with its coordinates and walked lane</small>
+                </span>
+                <ChevronIcon size={20} className="action-chevron" />
               </button>
-              <h1 className="brand">Volunteer</h1>
-            </header>
-            <div className="volunteer-access-qr">
+              <button
+                type="button"
+                className="action-card"
+                onClick={() => setVolStep("path-heading")}
+              >
+                <span className="action-icon">
+                  <CompassIcon />
+                </span>
+                <span className="action-text">
+                  <strong>Fix walk direction</strong>
+                  <small>Point the phone along a lane between two boards</small>
+                </span>
+                <ChevronIcon size={20} className="action-chevron" />
+              </button>
+              <button
+                type="button"
+                className="action-card"
+                onClick={() => setVolStep("obstacle")}
+              >
+                <span className="action-icon warn">
+                  <BlockIcon />
+                </span>
+                <span className="action-text">
+                  <strong>Report a blocked lane</strong>
+                  <small>Barricade, crowd or closed gate on a lane</small>
+                </span>
+                <ChevronIcon size={20} className="action-chevron" />
+              </button>
+            </div>
+
+            <div className="share-card">
               <QRCodeSVG
                 value={volunteerRegisterLink(phoneOrigin)}
-                size={220}
+                size={132}
                 level="M"
                 includeMargin
                 bgColor="#ffffff"
                 fgColor="#14201c"
               />
-          <p className="volunteer-gutter">
-            Register Kumbh places and walk the mela lane once
-          </p>
-              <p className="volunteer-phone-url">
-                {volunteerRegisterLink(phoneOrigin)}
-              </p>
-              <div className="volunteer-home-actions">
-                <button
-                  type="button"
-                  className="btn primary block"
-                  onClick={() => setVolStep("register")}
-                >
-                  Register a mela place
-                </button>
-                <button
-                  type="button"
-                  className="btn soft block"
-                  onClick={() => setVolStep("path-heading")}
-                >
-                  Fix walk direction
-                </button>
-                <button
-                  type="button"
-                  className="btn soft block"
-                  onClick={() => setVolStep("obstacle")}
-                >
-                  Report a blocked lane
-                </button>
+              <div>
+                <strong>Open on another phone</strong>
+                <p>Scan to open volunteer registration.</p>
+                <p className="volunteer-phone-url">
+                  {volunteerRegisterLink(phoneOrigin)}
+                </p>
               </div>
             </div>
           </section>
@@ -507,41 +581,56 @@ export default function App() {
       <div className="atmosphere" aria-hidden />
 
       {step === "home" && (
-        <section className="screen home">
-          <header className="home-top user-home-top">
+        <section className="screen flow">
+          <TopBar
+            title="Find your way"
+            subtitle="Scan the board where you stand, pick a place, follow the arrow"
+            onBack={() => setMode("gate")}
+            aside={
+              <span className="topbar-badge" aria-hidden>
+                <DirectionArrow rotationDeg={18} size={44} />
+              </span>
+            }
+          />
+          <ol className="how-steps">
+            <li>
+              <span>1</span>Scan a board
+            </li>
+            <li>
+              <span>2</span>Choose a place
+            </li>
+            <li>
+              <span>3</span>Follow the arrow
+            </li>
+          </ol>
+          <div className="action-list">
             <button
               type="button"
-              className="back user-home-back"
-              onClick={() => setMode("gate")}
-              aria-label="Back"
-            >
-              ←
-            </button>
-            <h1 className="brand">Kumbh Wayfinding</h1>
-            <p className="lead">
-              Scan the board at your ghat or gate, choose where you are going,
-              and follow the arrow along the lane a volunteer walked. Works
-              offline in the mela.
-            </p>
-          </header>
-          <div className="home-visual" aria-hidden>
-            <div className="path-glow" />
-            <DirectionArrow rotationDeg={18} size={200} />
-          </div>
-          <div className="home-cta">
-            <button
-              type="button"
-              className="btn primary"
+              className="action-card featured"
               onClick={() => setStep("start")}
             >
-              Find my way
+              <span className="action-icon">
+                <WalkerIcon />
+              </span>
+              <span className="action-text">
+                <strong>Find my way</strong>
+                <small>Start from the board where you are</small>
+              </span>
+              <ChevronIcon size={20} className="action-chevron" />
             </button>
             <button
               type="button"
-              className="btn secondary"
+              className="action-card"
               onClick={() => setStep("boards")}
             >
-              Show mela boards
+              <span className="action-icon">
+                <BoardsIcon />
+              </span>
+              <span className="action-text">
+                <strong>Show mela boards</strong>
+                <small>QR codes of every registered place</small>
+              </span>
+              <ChevronIcon size={20} className="action-chevron" />
             </button>
           </div>
         </section>
@@ -561,8 +650,8 @@ export default function App() {
       {step === "start" && (
         <section className="screen flow">
           <TopBar
-            title="Where are you in the mela?"
-            subtitle="Scan a ghat, akhara, or gate board, or pick it below"
+            title="Where are you?"
+            subtitle="Scan the board near you, or pick the place below"
             onBack={() => setStep("home")}
           />
           <button
@@ -573,20 +662,22 @@ export default function App() {
               setShowScanner(true);
             }}
           >
-            Scan QR board (camera)
+            <ScanIcon size={20} /> Scan QR board
           </button>
           <button
             type="button"
             className="btn secondary block"
             onClick={() => setStep("boards")}
           >
-            Show mela boards
+            <BoardsIcon size={20} /> Show mela boards
           </button>
-          <p className="section-label">Mela places</p>
+          <p className="section-label">Or pick where you are</p>
           {registeredPlaces.length === 0 ? (
-            <p className="lead" style={{ marginTop: 8 }}>
-              No mela places yet. A volunteer must register a ghat, camp, or gate first.
-            </p>
+            <div className="empty-state">
+              <PinPlusIcon size={28} />
+              <strong>No mela places yet</strong>
+              <p>A volunteer must register a ghat, camp or gate first.</p>
+            </div>
           ) : (
             <div className="place-list">
               {registeredPlaces.map((n) => (
@@ -599,14 +690,14 @@ export default function App() {
                     setStep("destination");
                   }}
                 >
-                  <span className="place-mark">
-                    {TYPE_META[n.node_type]?.emoji ?? "·"}
+                  <span className={`place-mark ${placeTone(n.node_type)}`}>
+                    <PlaceIcon type={n.node_type} />
                   </span>
-                  <span>
+                  <span className="place-text">
                     <strong>{n.name}</strong>
                     <small>
-                      {n.code}
-                      {n.local_name ? ` · ${n.local_name}` : ""}
+                      {n.local_name ? `${n.local_name} · ` : ""}
+                      {siteCategoryLabel(n.node_type)}
                     </small>
                   </span>
                 </button>
@@ -619,24 +710,70 @@ export default function App() {
       {step === "destination" && start && (
         <section className="screen flow">
           <TopBar
-            title="Where in the mela?"
-            subtitle={`Starting from ${start.name}`}
+            title="Where to?"
+            subtitle="Choose the place you want to reach"
             onBack={() => setStep("start")}
           />
           <div className="start-chip">
-            Start · {start.name}
+            <span className={`place-mark small ${placeTone(start.node_type)}`}>
+              <PlaceIcon type={start.node_type} size={18} />
+            </span>
+            <span className="start-chip-text">
+              <small>You are at</small>
+              <strong>{start.name}</strong>
+            </span>
             <button type="button" onClick={() => setStep("start")}>
               Change
             </button>
           </div>
           {destinations.length === 0 ? (
-            <p className="lead" style={{ marginTop: 12 }}>
-              No other Kumbh places yet. Register ghats, akharas, medical camps,
-              toilets, parking, and gates in Volunteer mode.
-            </p>
+            <div className="empty-state">
+              <PinPlusIcon size={28} />
+              <strong>No other places yet</strong>
+              <p>
+                Volunteers can register ghats, hospitals, parking and camps in
+                Volunteer mode.
+              </p>
+            </div>
           ) : (
+            <>
+            {destinationAreas.length > 1 && (
+              <div className="filter-row" role="group" aria-label="Area">
+                {(["all", ...destinationAreas] as const).map((a) => (
+                  <button
+                    key={a}
+                    type="button"
+                    className={`filter-chip ${activeArea === a ? "active" : ""}`}
+                    onClick={() => setAreaFilter(a)}
+                  >
+                    {a === "all" ? "All locations" : a}
+                  </button>
+                ))}
+              </div>
+            )}
+            {destinationCategories.length > 1 && (
+              <div className="filter-row" role="group" aria-label="Category">
+                {[{ id: "all", label: "All places" }, ...destinationCategories].map(
+                  (c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className={`filter-chip ${activeCategory === c.id ? "active" : ""}`}
+                      onClick={() => setCategoryFilter(c.id)}
+                    >
+                      {c.label}
+                    </button>
+                  )
+                )}
+              </div>
+            )}
+            {filteredDestinations.length === 0 && (
+              <div className="empty-state">
+                <strong>No places match these filters</strong>
+              </div>
+            )}
             <div className="dest-grid">
-              {destinations.map((n) => (
+              {filteredDestinations.map((n) => (
                 <button
                   key={n.code}
                   type="button"
@@ -647,17 +784,23 @@ export default function App() {
                     heading.requestPermission();
                   }}
                 >
-                  <span className="dest-icon">
-                    {TYPE_META[n.node_type]?.emoji ?? "·"}
+                  <span className="dest-top">
+                    <span className={`dest-icon ${placeTone(n.node_type)}`}>
+                      <PlaceIcon type={n.node_type} />
+                    </span>
+                    {officialPlaceFor(n)?.zone && (
+                      <span className="zone-badge">
+                        Zone {officialPlaceFor(n)?.zone}
+                      </span>
+                    )}
                   </span>
                   <strong>{n.name}</strong>
-                  <small>
-                    {n.local_name ? `${n.local_name} · ` : ""}
-                    {TYPE_META[n.node_type]?.hint ?? n.code}
-                  </small>
+                  {n.local_name && <span className="dest-local">{n.local_name}</span>}
+                  <small>{siteCategoryLabel(n.node_type)}</small>
                 </button>
               ))}
             </div>
+            </>
           )}
         </section>
       )}
@@ -666,23 +809,23 @@ export default function App() {
         <section className="screen guide">
           <TopBar
             title={dest.name}
-            subtitle="YOU REACHED YOUR DESTINATION"
+            subtitle="Navigation finished"
             onBack={() => setStep("destination")}
             light
           />
           <div className="empty-route">
-            <p>✓ YOU REACHED YOUR DESTINATION</p>
-            <p className="fine" style={{ opacity: 0.75 }}>
+            <span className="status-orb ok" aria-hidden>
+              ✓
+            </span>
+            <h3 className="status-title">You have arrived</h3>
+            <p className="fine">
               {scannedArrived
-                ? "Destination board scanned — destination reached successfully"
-                : "Within about 2 m on a walkable final path — destination reached successfully"}
-            </p>
-            <p className="fine" style={{ opacity: 0.55 }}>
-              Navigation stopped ({navState})
+                ? "Destination board scanned."
+                : "You are on the final lane, within about 2 m of the board."}
             </p>
             <button
               type="button"
-              className="btn primary"
+              className="btn primary wide"
               onClick={() => {
                 setStep("home");
                 setStart(null);
@@ -699,20 +842,39 @@ export default function App() {
         <section className="screen guide">
           <TopBar
             title={dest.name}
-            subtitle="Destination currently unreachable"
+            subtitle={`From ${start.name}`}
             onBack={() => setStep("destination")}
             light
           />
           <div className="empty-route">
-            <p>No safe route is currently available.</p>
-            <p className="fine" style={{ opacity: 0.8 }}>
+            <span className="status-orb warn" aria-hidden>
+              <BlockIcon size={30} />
+            </span>
+            <h3 className="status-title">No walked lane yet</h3>
+            <p className="fine">
               {route.reason ||
                 routeValidation?.errors?.[0] ||
                 "Please move to the nearest marked pathway, or ask a volunteer to open a walk link / clear an obstacle."}
             </p>
+            <div className="far-advice">
+              <p className="far-distance">
+                {(() => {
+                  const m = haversineM(start.lat, start.lon, dest.lat, dest.lon);
+                  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
+                })()}
+                <small>away in a straight line</small>
+              </p>
+              {officialPlaceFor(dest) && (
+                <p className="far-tip">{officialPlaceFor(dest)?.getThere}</p>
+              )}
+              <p className="far-tip">Ask a volunteer or follow the mela signboards.</p>
+              <p className="far-note">
+                Guidance only — follow official signs and police instructions.
+              </p>
+            </div>
             <button
               type="button"
-              className="btn primary"
+              className="btn primary wide"
               onClick={() => setStep("destination")}
             >
               Pick another place
@@ -889,21 +1051,25 @@ function TopBar({
   subtitle,
   onBack,
   light,
+  aside,
 }: {
   title: string;
   subtitle: string;
   onBack: () => void;
   light?: boolean;
+  /** Small element on the right of the title, e.g. a badge. */
+  aside?: ReactNode;
 }) {
   return (
     <div className={`topbar ${light ? "light" : ""}`}>
       <button type="button" className="back" onClick={onBack} aria-label="Back">
         ←
       </button>
-      <div>
+      <div className="topbar-text">
         <h2>{title}</h2>
         <p>{subtitle}</p>
       </div>
+      {aside}
     </div>
   );
 }

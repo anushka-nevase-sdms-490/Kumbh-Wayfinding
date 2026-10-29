@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { GraphEdge, QrNode } from "../lib/types";
 import "./Volunteer.css";
 
@@ -12,8 +12,8 @@ type Props = {
 export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
   const [nodes, setNodes] = useState<QrNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
-  const [fromCode, setFromCode] = useState("");
-  const [toCode, setToCode] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [laneKey, setLaneKey] = useState("");
   const [blocked, setBlocked] = useState(true);
   const [doorState, setDoorState] = useState("none");
   const [passageKind, setPassageKind] = useState("corridor");
@@ -46,13 +46,11 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
         if (!cancelled) {
           setNodes(list);
           setEdges(edgeList);
-          if (list.length >= 2) {
-            setFromCode(list[0].code);
-            setToCode(list[1].code);
-          }
         }
       } catch {
         /* ignore */
+      } finally {
+        if (!cancelled) setLoaded(true);
       }
     })();
     return () => {
@@ -64,11 +62,32 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
     nodes.find((n) => n.code.toUpperCase() === code.toUpperCase())?.name ??
     code;
 
+  // Every known lane between registered boards, including blocked ones (✕) so
+  // they can be reopened.
+  const lanes = useMemo(() => {
+    const codes = new Set(nodes.map((n) => n.code.toUpperCase()));
+    return edges
+      .filter(
+        (e) =>
+          codes.has(e.from_code.toUpperCase()) && codes.has(e.to_code.toUpperCase())
+      )
+      .map((e) => ({
+        key: `${e.from_code.toUpperCase()}|${e.to_code.toUpperCase()}`,
+        a: e.from_code,
+        b: e.to_code,
+        closed: !!e.blocked || e.door_state === "closed" || e.walkable === false,
+      }));
+  }, [edges, nodes]);
+
+  const lane = lanes.find((l) => l.key === laneKey) ?? null;
+  const fromCode = lane?.a ?? "";
+  const toCode = lane?.b ?? "";
+
   async function save() {
     setErr(null);
     setMsg(null);
-    if (!fromCode || !toCode || fromCode === toCode) {
-      setErr("Pick two different linked boards.");
+    if (!lane) {
+      setErr("Choose a lane first.");
       return;
     }
     setBusy(true);
@@ -115,6 +134,10 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
   }
 
   async function reopen() {
+    if (!lane) {
+      setErr("Choose a lane first.");
+      return;
+    }
     setBlocked(false);
     setDoorState("open");
     setBusy(true);
@@ -158,45 +181,31 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
         </div>
       </header>
 
+      {loaded && lanes.length === 0 ? (
+        <div className="empty-state">
+          <strong>No walked lanes yet</strong>
+          <p>
+            Register at least two places and record the walk between them.
+            Their lane then appears here.
+          </p>
+        </div>
+      ) : (
       <div className="volunteer-form">
         <p className="field-hint">
-          The mela has no floor plan. Boards and walked lanes are the map.
-          Mark a lane blocked when a barricade, closed gate, or crowd closes
-          it. The guide then uses another lane, or says there is no route.
+          Mark a lane blocked when a barricade, closed gate, or crowd closes it.
+          The guide then uses another lane, or says there is no route.
         </p>
 
-        {edges.length > 0 && (
-          <p className="gps-status">
-            Known links:{" "}
-            {edges
-              .map(
-                (e) =>
-                  `${nameOf(e.from_code)}↔${nameOf(e.to_code)}${
-                    e.blocked || e.door_state === "closed" || e.walkable === false
-                      ? " ✕"
-                      : ""
-                  }`
-              )
-              .join(" · ") || "—"}
-          </p>
-        )}
-
         <label>
-          From board
-          <select value={fromCode} onChange={(e) => setFromCode(e.target.value)}>
-            {nodes.map((n) => (
-              <option key={n.code} value={n.code}>
-                {n.name} — {n.code}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          To board
-          <select value={toCode} onChange={(e) => setToCode(e.target.value)}>
-            {nodes.map((n) => (
-              <option key={n.code} value={n.code}>
-                {n.name} — {n.code}
+          Lane
+          <select value={laneKey} onChange={(e) => setLaneKey(e.target.value)}>
+            <option value="" disabled>
+              Choose a lane…
+            </option>
+            {lanes.map((l) => (
+              <option key={l.key} value={l.key}>
+                {nameOf(l.a)} ↔ {nameOf(l.b)}
+                {l.closed ? " ✕ blocked" : ""}
               </option>
             ))}
           </select>
@@ -252,7 +261,7 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
         <button
           type="button"
           className="btn primary block"
-          disabled={busy}
+          disabled={busy || !lane}
           onClick={() => void save()}
         >
           {busy ? "Saving…" : "Save — remove from routes"}
@@ -260,12 +269,13 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
         <button
           type="button"
           className="btn soft block"
-          disabled={busy}
+          disabled={busy || !lane}
           onClick={() => void reopen()}
         >
           Reopen path
         </button>
       </div>
+      )}
     </section>
   );
 }
