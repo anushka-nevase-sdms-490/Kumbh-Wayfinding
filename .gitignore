@@ -29,3 +29,4 @@ mobile/**/build/
 *.db
 _archive/
 frontend/.certs/
+*.timestamp-*.mjs
