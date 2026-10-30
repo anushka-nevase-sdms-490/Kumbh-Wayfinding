@@ -23,6 +23,17 @@ class QrNodeOut(QrNodeCreate):
     updated_at: Optional[datetime] = None
     # Trust level (app/verification.py) — set by the server only.
     verification: str = "unverified"
+    verified_at: Optional[datetime] = None
+    source: Optional[str] = None
+    # Operational status; not claimed after op_status_until.
+    op_status: Optional[str] = None
+    op_status_until: Optional[datetime] = None
+    op_status_note: Optional[str] = None
+    op_status_at: Optional[datetime] = None
+    step_free: Optional[bool] = None
+    access: Optional[str] = None
+    access_note: Optional[str] = None
+    board_code: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -258,6 +269,13 @@ class AdminPlace(BaseModel):
     confirmed: bool
     verification: str = "unverified"
     verification_note: Optional[str] = None
+    op_status: Optional[str] = None
+    op_status_until: Optional[datetime] = None
+    op_status_note: Optional[str] = None
+    step_free: Optional[bool] = None
+    access: Optional[str] = None
+    access_note: Optional[str] = None
+    board_code: Optional[str] = None
 
 
 class AdminLane(BaseModel):
@@ -285,6 +303,26 @@ class AdminOverview(BaseModel):
     reports: List[BlockReportOut]
 
 
+class PlaceStatusRequest(BaseModel):
+    code: str = Field(..., min_length=2, max_length=32)
+    # "unknown" clears the status.
+    status: str = Field(..., pattern=r"^(open|limited|closed|unknown)$")
+    # How long the status may be claimed (then the app shows "not confirmed").
+    hours: float = Field(6, gt=0, le=168)
+    note: Optional[str] = Field(None, max_length=120)
+
+
+class PlaceAccessRequest(BaseModel):
+    code: str = Field(..., min_length=2, max_length=32)
+    step_free: Optional[bool] = None
+    access: Optional[str] = Field(None, pattern=r"^(public|restricted)$")
+    access_note: Optional[str] = Field(None, max_length=120)
+
+
+class BoardRequest(BaseModel):
+    code: str = Field(..., min_length=2, max_length=32)
+
+
 class PublishRequest(BaseModel):
     note: Optional[str] = Field(None, max_length=256)
 
@@ -310,3 +348,57 @@ class VerifyRequest(BaseModel):
         if v not in STATUSES:
             raise ValueError(f"status must be one of {', '.join(STATUSES)}")
         return v
+
+
+# ---------------- SOS (Phase 6) ----------------
+class SosCreate(BaseModel):
+    """A visitor's "I need help". No account; `client_id` is random, made on the phone."""
+
+    client_id: str = Field(..., pattern=r"^[A-Za-z0-9-]{16,64}$")
+    kind: str = Field(..., pattern=r"^(medical|lost|unsafe|other)$")
+    note: Optional[str] = Field(None, max_length=280)
+    lat: Optional[float] = Field(None, ge=-90, le=90)
+    lon: Optional[float] = Field(None, ge=-180, le=180)
+    accuracy_m: Optional[float] = Field(None, ge=0, le=100000)
+    place_code: Optional[str] = Field(None, max_length=32)
+    lang: Optional[str] = Field(None, pattern=r"^(en|hi|mr)$")
+    device: Optional[str] = Field(None, min_length=8, max_length=64)
+
+
+class SosAck(BaseModel):
+    message: Optional[str] = Field(None, max_length=200)
+
+
+class SosResolve(BaseModel):
+    note: Optional[str] = Field(None, max_length=200)
+
+
+# ---------------- Lost-person cases (Phase 6) ----------------
+CASE_STATUSES = ("NEW", "UNDER_REVIEW", "POSSIBLE_MATCH", "ESCALATED", "REUNITED", "CLOSED")
+
+
+class CaseFields(BaseModel):
+    person_name: Optional[str] = Field(None, max_length=80)
+    approx_age: Optional[int] = Field(None, ge=0, le=120)
+    gender: Optional[str] = Field(None, max_length=12)
+    description: str = Field(..., min_length=3, max_length=500)
+    languages: Optional[str] = Field(None, max_length=60)
+    last_seen_place_code: Optional[str] = Field(None, max_length=32)
+    last_seen_note: Optional[str] = Field(None, max_length=200)
+    last_seen_at: Optional[datetime] = None
+    reporter_name: Optional[str] = Field(None, max_length=80)
+    reporter_contact: Optional[str] = Field(None, pattern=r"^[0-9+ -]{6,20}$")
+
+
+class CaseCreate(CaseFields):
+    sos_id: Optional[int] = None
+
+
+class CaseUpdate(CaseFields):
+    version: int
+
+
+class CaseStatusChange(BaseModel):
+    to: str = Field(..., pattern=r"^(NEW|UNDER_REVIEW|POSSIBLE_MATCH|ESCALATED|REUNITED|CLOSED)$")
+    note: Optional[str] = Field(None, max_length=200)
+    version: int

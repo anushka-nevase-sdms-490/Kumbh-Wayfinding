@@ -43,6 +43,9 @@ import {
 } from "../src/lib/location/simulationWalk";
 import { fetchNewerPack } from "../src/lib/packSync";
 import { checkStored, isQuotaError, packChecksum } from "../src/lib/packStore";
+import { normalizeBoardCode, opStatus, resolveBoard, searchPlaces, trustOf } from "../src/lib/placeInfo";
+import { createSos, flushSos, type SosItem, type SosStore, type SosTransport } from "../src/lib/sos";
+import { ask } from "../src/lib/assistant";
 import { dismissOutboxItem, flushOutbox, sendOrQueue, type OutboxItem, type OutboxStore, type Sender } from "../src/lib/outbox";
 import { BUNDLED_SIGNATURE, FALLBACK_PACK } from "../src/lib/fallbackPack";
 import { officialPlaceFor } from "../src/lib/officialPlaces";
@@ -701,6 +704,94 @@ function pack(edges: GraphEdge[], nodes: QrNode[] = [START, MID, DEST, CORNER]):
     "T30 queued-change labels are shown in the volunteer's language");
 }
 
+// ── T31: facility status, trust, search, QR board codes (offline, from the saved data) ──
+{
+  const now = new Date("2026-10-30T10:00:00Z");
+  const base = { id: 1, code: "KUMBH-A1", name: "Ramkund Ghat", local_name: "रामकुंड", lat: 20, lon: 73.79, node_type: "ghat" };
+  const open = opStatus({ ...base, op_status: "open", op_status_until: "2026-10-30T12:00:00", op_status_note: "till evening" }, now);
+  assert(open.kind === "open" && open.until.toISOString() === "2026-10-30T12:00:00.000Z" && open.note === "till evening",
+    "T31 an open status is shown with its expiry (server time without a zone is UTC)");
+  assert(opStatus({ ...base, op_status: "closed", op_status_until: "2026-10-30T09:59:00" }, now).kind === "expired",
+    "T31 an expired status is never shown as current");
+  assert(opStatus({ ...base, op_status: "open" }, now).kind === "unknown" && opStatus(base, now).kind === "unknown"
+    && opStatus({ ...base, op_status: "weird", op_status_until: "2026-10-31T00:00:00" }, now).kind === "unknown",
+    "T31 no status, no expiry or an unknown value → 'not confirmed'");
+
+  assert(trustOf({ ...base, verification: "volunteer_verified", verified_at: "2026-10-29" }).kind === "field"
+    && trustOf({ ...base, verification: "officially_verified" }).kind === "official"
+    && trustOf({ ...base, verification: "remotely_reviewed" }).kind === "reviewed"
+    && trustOf({ ...base, verification: "osm_imported" }).kind === "map" && trustOf(base).kind === "map",
+    "T31 the trust shown to visitors is never more than recorded");
+
+  const nodes = [
+    base,
+    { ...base, id: 2, code: "KUMBH-A2", name: "Civil Hospital", local_name: "जिल्हा शासकीय रुग्णालय", node_type: "medical", board_code: "K7M4Q" },
+    { ...base, id: 3, code: "OSM-N5", name: "Kalaram Mandir", local_name: "काळाराम मंदिर", node_type: "temple" },
+    { ...base, id: 4, code: "OSM-J9", name: "", local_name: null, node_type: "junction" },
+  ];
+  const label = (n: { node_type: string }) => (n.node_type === "medical" ? "Hospitals" : "Temples");
+  assert(searchPlaces(nodes, "kala", label)[0]?.code === "OSM-N5" && searchPlaces(nodes, "रुग्णालय", label)[0]?.code === "KUMBH-A2"
+    && searchPlaces(nodes, "  HOSPITAL ", label).length === 1 && searchPlaces(nodes, "civil hosp", label).length === 1
+    && searchPlaces(nodes, "zzz", label).length === 0 && searchPlaces(nodes, "", label).length === nodes.length,
+    "T31 search by English or local name, any case, several words; empty search shows all");
+
+  assert(normalizeBoardCode(" k7m4q ") === "K7M4Q" && normalizeBoardCode("k7-m4q") === "K7M4Q"
+    && normalizeBoardCode("K7M4O") === null && normalizeBoardCode("K7M4") === null && normalizeBoardCode("K1M4Q") === null,
+    "T31 board codes: case and dashes ignored; look-alike letters (O, 1) and wrong lengths are invalid");
+  const found = resolveBoard(nodes, "k7m4q");
+  assert(found.kind === "found" && found.node.code === "KUMBH-A2" && found.boardCode === "K7M4Q",
+    "T31 a typed board code finds its place in the saved data (offline)");
+  assert(resolveBoard(nodes, "OSM-N5").kind === "found", "T31 a link with a place code also works");
+  const unknown = resolveBoard(nodes, "ZZZZZ");
+  assert(unknown.kind === "unknown" && unknown.code === "ZZZZZ", "T31 a valid code not in the saved data → 'unknown' (old data or retired board)");
+  assert(resolveBoard(nodes, "hello world").kind === "invalid" && resolveBoard(nodes, "").kind === "invalid",
+    "T31 text that is not a code → 'invalid'");
+  assert(resolveBoard(nodes, "OSM-J9").kind === "unknown", "T31 hidden junctions are never a board's place");
+  // A rejected place is left out of the pack by the server, so its board is simply unknown on the phone.
+  assert(resolveBoard(nodes.filter((n) => n.code !== "KUMBH-A2"), "K7M4Q").kind === "unknown",
+    "T31 a board whose place was removed (rejected) is unknown, not a wrong place");
+}
+
+// ── T33: "Ask Setu" — offline answers from the saved data only, never invented ──
+{
+  const now = new Date("2026-10-30T10:00:00Z");
+  const P = (code: string, name: string, type: string, lat: number, extra = {}) =>
+    ({ id: 0, code, name, local_name: null, lat, lon: 73.79, node_type: type, ...extra });
+  const places = [
+    P("M1", "Civil Hospital", "medical", 20.02, { local_name: "जिल्हा शासकीय रुग्णालय", verification: "osm_imported" }),
+    P("M2", "Ramkund First Aid", "medical", 20.0075, { verification: "volunteer_verified", verified_at: "2026-10-29" }),
+    P("M3", "Closed Clinic", "medical", 20.0073, { op_status: "closed", op_status_until: "2026-10-30T12:00:00" }),
+    P("T1", "Kalaram Mandir", "temple", 20.009, { local_name: "काळाराम मंदिर", op_status: "open", op_status_until: "2026-10-30T18:00:00" }),
+    P("W1", "Water Point", "water", 20.008),
+    P("OSM-J1", "", "junction", 20.0072),
+  ];
+  const at = { lat: 20.0072, lon: 73.79 };
+  const a = ask("Where is the nearest hospital?", { places, from: at, now });
+  assert(a.kind === "nearest" && a.topic === "medical" && a.places[0].node.code === "M2" && a.places.at(-1)!.node.code === "M3",
+    "T33 'nearest hospital': nearest open place first; a place reported closed goes last");
+  assert(a.kind === "nearest" && a.anyFieldChecked && a.places.every((h) => places.includes(h.node)),
+    "T33 answers list only places from the saved data, with whether they were checked on site");
+  const hi = ask("सबसे पास अस्पताल कहाँ है", { places, from: at, now });
+  const mr = ask("जवळचा दवाखाना कुठे आहे?", { places, from: at, now });
+  assert(hi.kind === "nearest" && hi.topic === "medical" && mr.kind === "nearest" && mr.topic === "medical",
+    "T33 the same question in Hindi and Marathi");
+  const st = ask("Is Kalaram Mandir open?", { places, from: at, now });
+  assert(st.kind === "status" && st.place.node.code === "T1" && st.place.status.kind === "open",
+    "T33 'is <place> open?': its status from the data, with its expiry");
+  const stale = ask("Is Kalaram Mandir open?", { places, from: at, now: new Date("2026-10-31T10:00:00Z") });
+  assert(stale.kind === "status" && stale.place.status.kind === "expired", "T33 a lapsed status is never answered as 'open'");
+  assert(ask("काळाराम मंदिर उघडं आहे का", { places, from: at, now }).kind === "status", "T33 a place named in Marathi is found");
+  const none = ask("nearest toilet", { places, from: at, now });
+  assert(none.kind === "none" && none.topic === "toilet", "T33 no such place in the data → says so (never makes one up)");
+  assert(ask("what is the weather tomorrow", { places, from: at, now }).kind === "unknown"
+    && ask("", { places, from: at, now }).kind === "unknown", "T33 questions it cannot answer from the data → 'unknown'");
+  assert(ask("safety tips for the crowd", { places, from: at, now }).kind === "safety", "T33 safety tips come from the fixed list");
+  const noPos = ask("drinking water", { places, from: null, now });
+  assert(noPos.kind === "nearest" && noPos.places[0].distanceM === null, "T33 without a position no distance is claimed");
+  const lost = ask("my child is lost", { places, from: at, now });
+  assert(lost.kind === "none" && lost.topic === "lost", "T33 'lost' looks for Lost & Found / help desks / police, not other places");
+}
+
 // ── T26: Nashik simulation mode — the simulated walker and the real navigation logic ──
 {
   // Repeatable "random" numbers for noise and jumps.
@@ -972,6 +1063,83 @@ async function outboxTests() {
   assert(q.kind === "queued", "T29 server down (5xx) → kept for later");
 }
 await outboxTests();
+
+// ── T32: SOS on the phone — truthful states (pending → sent → acknowledged), never duplicated ──
+async function sosTests() {
+  const mem = new Map<string, SosItem>();
+  const store: SosStore = {
+    list: async () => [...mem.values()].map((x) => structuredClone(x)),
+    put: async (i) => void mem.set(i.clientId, structuredClone(i)),
+    remove: async (id) => void mem.delete(id),
+  };
+  const res = (status: number, data: unknown) => ({ status, ok: status < 300, json: async () => data }) as Response;
+  const server = new Map<string, { id: number; status: string; ack_message: string | null }>();
+  let posts = 0;
+  let mode: "offline" | "down" | "busy" | "ok" | "refuse" = "offline";
+  const transport: SosTransport = {
+    post: async (body) => {
+      posts++;
+      if (mode === "offline") throw new TypeError("Failed to fetch");
+      if (mode === "down") return res(502, {});
+      if (mode === "busy") return res(429, { detail: "Too many alerts from this phone" });
+      if (mode === "refuse") return res(422, { detail: "Bad alert" });
+      const b = body as { client_id: string };
+      const existing = server.get(b.client_id);
+      if (existing) return res(200, { ...existing, received_at: "2026-10-30T10:00:00", duplicate: true });
+      const row = { id: server.size + 1, status: "received", ack_message: null };
+      server.set(b.client_id, row);
+      return res(201, { ...row, received_at: "2026-10-30T10:00:00", duplicate: false });
+    },
+    get: async (id) => {
+      if (mode === "offline") throw new TypeError("Failed to fetch");
+      const row = server.get(id);
+      return row ? res(200, { ...row, received_at: "2026-10-30T10:00:00", ack_at: row.status === "received" ? null : "2026-10-30T10:02:00" }) : res(404, {});
+    },
+  };
+  const fields = { kind: "medical" as const, note: " fainted ", lat: 20, lon: 73.79, accuracyM: 9, placeCode: null, lang: "en", device: "d-1" };
+
+  const a = await createSos(fields, store, transport);
+  assert(a.state === "pending" && a.note === "fainted" && mem.size === 1, "T32 offline: the alert is saved on the phone as PENDING (never 'sent')");
+  mode = "down";
+  await flushSos(store, transport);
+  assert(mem.get(a.clientId)!.state === "pending", "T32 server down (5xx): still PENDING");
+  mode = "busy";
+  await flushSos(store, transport);
+  const busy = mem.get(a.clientId)!;
+  assert(busy.state === "pending" && busy.error === "Too many alerts from this phone", "T32 rate-limited (429): still PENDING, with the reason");
+  mode = "ok";
+  await flushSos(store, transport);
+  const sent = mem.get(a.clientId)!;
+  assert(sent.state === "sent" && sent.serverId === 1 && sent.receivedAt, "T32 back online: SENT only after the server stored it (with its id)");
+  // The phone resends (e.g. it never saw the answer): the server returns the same alert.
+  mem.set(a.clientId, { ...sent, state: "pending" });
+  await flushSos(store, transport);
+  assert(server.size === 1 && mem.get(a.clientId)!.serverId === 1, "T32 sending again never makes a second alert");
+  await flushSos(store, transport);
+  assert(mem.get(a.clientId)!.state === "sent", "T32 not ACKNOWLEDGED until an operator confirms");
+  server.get(a.clientId)!.status = "acknowledged";
+  server.get(a.clientId)!.ack_message = "A volunteer is coming";
+  await flushSos(store, transport);
+  const ack = mem.get(a.clientId)!;
+  assert(ack.state === "acknowledged" && ack.ackMessage === "A volunteer is coming" && ack.ackAt,
+    "T32 ACKNOWLEDGED only when the server says an operator confirmed it, with their message");
+  mode = "refuse";
+  const r = await createSos({ ...fields, kind: "other" }, store, transport);
+  assert(r.state === "refused" && r.error === "Bad alert", "T32 a refused alert says so, with the server's reason");
+  // App restart: everything is still in the store, nothing lost.
+  const reloaded = await store.list();
+  assert(reloaded.length === 2 && reloaded.some((x) => x.state === "acknowledged"), "T32 after a restart the alerts and their states are still there");
+  server.get(a.clientId)!.status = "expired";
+  await flushSos(store, transport);
+  assert(mem.get(a.clientId)!.state === "expired", "T32 an alert the server closed after 48 h shows as EXPIRED, not as still waiting");
+  server.get(a.clientId)!.status = "acknowledged";
+  mem.set(a.clientId, { ...mem.get(a.clientId)!, state: "acknowledged" });
+  mode = "offline";
+  const before = posts;
+  await flushSos(store, transport);
+  assert(posts === before && mem.get(a.clientId)!.state === "acknowledged", "T32 offline refresh changes nothing (no false updates)");
+}
+await sosTests();
 
 if (failed) {
   console.error(`\n${failed} test(s) failed`);

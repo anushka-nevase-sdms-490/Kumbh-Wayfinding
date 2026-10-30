@@ -43,6 +43,7 @@ _db.add_all([
     Volunteer(phone="9000000001", name="Admin", role="admin", pin_hash=hash_pin("482913")),
     Volunteer(phone="9000000002", name="Asha", role="volunteer", pin_hash=hash_pin("736251")),
     Volunteer(phone="9000000003", name="Ravi", role="volunteer", pin_hash=hash_pin("593017")),
+    Volunteer(phone="9000000004", name="Meera", role="operator", pin_hash=hash_pin("618274")),
 ])
 _db.commit()
 _db.close()
@@ -108,6 +109,7 @@ with TestClient(app) as anon:
     check(anon.get("/api/auth/me", headers=ADMIN).status_code == 401, "expired token → 401")
     ADMIN = {"Authorization": f"Bearer {login('9000000001', '482913').json()['token']}"}
     VOL2 = {"Authorization": f"Bearer {login('9000000003', '593017').json()['token']}"}
+    OPER = {"Authorization": f"Bearer {login('9000000004', '618274').json()['token']}"}
 
 with TestClient(app, headers=ADMIN) as c:
     reg = lambda **kw: c.post("/api/volunteer/register", json={"location_name": kw.pop("name"), "local_name": "x", **kw})
@@ -821,6 +823,247 @@ with TestClient(app, headers=ADMIN) as c, TestClient(app, headers=VOL2) as vc:
         c.post("/api/admin/verify", json={"target": "place", "code": victim["code"], "status": "volunteer_verified"})
     finally:
         _cfg.publish_mode = ""
+
+# Facility status, access and QR board codes (Phase 5).
+with TestClient(app, headers=ADMIN) as c:
+    import re as _re
+
+    def pack_node(code):
+        c.post("/api/pack/build")
+        return next((n for n in c.get("/api/pack/latest/json").json()["nodes"] if n["code"] == code), None)
+
+    place = next(n for n in c.get("/api/pack/latest/json").json()["nodes"]
+                 if n["code"].startswith("KUMBH-") and n.get("verification") != "rejected")
+    pc = place["code"]
+    body = {"code": pc, "status": "closed", "hours": 2, "note": "crowd control"}
+    check(c.post("/api/admin/place-status", json=body, headers={"Authorization": ""}).status_code == 401
+          and c.post("/api/admin/place-status", json=body, headers=VOL2).status_code == 403,
+          "facility status needs an operator or admin (anonymous 401, volunteer 403)")
+    r = c.post("/api/admin/place-status", json=body, headers=OPER)
+    n = pack_node(pc)
+    check(r.status_code == 200 and n["op_status"] == "closed" and n["op_status_note"] == "crowd control"
+          and n["op_status_until"] and "op_status_by" not in n,
+          "an operator marks a facility closed for 2 h; phones get the status, its expiry and note (not who set it)")
+    c.post("/api/admin/place-status", json={"code": pc, "status": "unknown"})
+    check(pack_node(pc)["op_status"] is None, "clearing the status removes the claim")
+    check(c.post("/api/admin/place-status", json={**body, "hours": 0}).status_code == 422
+          and c.post("/api/admin/place-status", json={**body, "status": "maybe"}).status_code == 422,
+          "a status needs a known value and a validity of more than 0 hours")
+    dated = [x["verified_at"] for x in c.get("/api/pack/latest/json").json()["nodes"] if x.get("verified_at")]
+    check(n.get("source") in ("volunteer", "osm", "admin") and dated and all(_re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) for d in dated),
+          f"places carry their source and only the DAY they were checked ({len(dated)} dated, e.g. {dated[:1]})")
+
+    check(c.post("/api/admin/place-access", json={"code": pc, "step_free": True}, headers=OPER).status_code == 403,
+          "access details need an admin")
+    c.post("/api/admin/place-access", json={"code": pc, "step_free": True, "access": "restricted", "access_note": "women only"})
+    n = pack_node(pc)
+    check(n["step_free"] is True and n["access"] == "restricted" and n["access_note"] == "women only",
+          "step-free access and restrictions reach the pack")
+
+    check(c.post("/api/admin/board", json={"code": pc}, headers=VOL2).status_code == 403, "board codes need an admin")
+    b1 = c.post("/api/admin/board", json={"code": pc}).json()
+    b2 = c.post("/api/admin/board", json={"code": pc}).json()
+    check(b1["created"] and not b2["created"] and b1["board_code"] == b2["board_code"]
+          and _re.fullmatch(r"[2-9A-HJKMNP-Z]{5}", b1["board_code"]),
+          f"a place gets one stable 5-character board code without look-alike letters ({b1['board_code']})")
+    check(pack_node(pc)["board_code"] == b1["board_code"], "the board code is in the pack (works offline)")
+    junction = next(x["code"] for x in c.get("/api/nodes").json() if x["code"].startswith("OSM-J"))
+    check(c.post("/api/admin/board", json={"code": junction}).status_code == 404, "hidden junctions cannot have boards")
+    from app.db import QrNode as _Q, SessionLocal as _S
+    from sqlalchemy.exc import IntegrityError as _IE
+
+    other = next(x["code"] for x in c.get("/api/nodes").json()
+                 if x["code"].startswith("KUMBH-") and x["code"] != pc and not x["code"].startswith("OSM-J"))
+    _db = _S()
+    try:
+        _db.query(_Q).filter(_Q.code == other).update({_Q.board_code: b1["board_code"]})
+        _db.commit()
+        dup_ok = False
+    except _IE:
+        _db.rollback()
+        dup_ok = True
+    finally:
+        _db.close()
+    check(dup_ok, "the database refuses two places with the same board code")
+    old_code = b1["board_code"]
+    r = c.post("/api/admin/board/retire", json={"code": pc})
+    b3 = c.post("/api/admin/board", json={"code": pc}).json()
+    check(r.status_code == 200 and pack_node(pc)["board_code"] == b3["board_code"] and b3["board_code"] != old_code,
+          "a board on the wrong place is retired; the place gets a new code; the old one is not reused")
+    c.post("/api/admin/verify", json={"target": "place", "code": other, "status": "rejected", "note": "test"})
+    check(c.post("/api/admin/board", json={"code": other}).status_code == 400, "a rejected place cannot get a board")
+    c.post("/api/admin/verify", json={"target": "place", "code": other, "status": "unverified"})
+    check(any(e["action"] == "board.create" for e in c.get("/api/admin/audit?limit=100").json())
+          and any(e["action"] == "place.status" for e in c.get("/api/admin/audit?limit=100").json()),
+          "board codes and status changes are in the audit log")
+
+    # With manual publishing, a status change is live at once and is not "waiting to publish".
+    _cfg.publish_mode = "manual"
+    try:
+        c.post("/api/admin/publish", json={"note": "status test baseline"})
+        c.post("/api/admin/place-status", json={"code": pc, "status": "limited", "hours": 1}, headers=OPER)
+        live = pack_node(pc)
+        waiting = c.get("/api/admin/releases").json()["draft"]
+        check(live["op_status"] == "limited" and waiting["places_changed"] == 0,
+              "manual publishing: a status change reaches phones at once and is not 'waiting to publish'")
+        c.post("/api/admin/place-status", json={"code": pc, "status": "unknown"})
+        # Retiring a wrong board must not wait for publishing either.
+        code_now = c.post("/api/admin/board", json={"code": pc}).json()["board_code"]
+        c.post("/api/admin/publish", json={"note": "board baseline"})
+        check(pack_node(pc)["board_code"] == code_now, "manual publishing: the published board code is on phones")
+        c.post("/api/admin/board/retire", json={"code": pc})
+        check(not any(x.get("board_code") == code_now for x in c.get("/api/pack/latest/json").json()["nodes"]),
+              "manual publishing: a retired board stops working on phones at once (no publish needed)")
+    finally:
+        _cfg.publish_mode = ""
+
+# SOS alerts (Phase 6): truthful states, never duplicated, operator-only details.
+with TestClient(app) as anon:
+    from uuid import uuid4 as _uuid
+
+    cid = str(_uuid())
+    body = {"client_id": cid, "kind": "medical", "note": "father fainted near the steps", "lat": 20.0072,
+            "lon": 73.7925, "accuracy_m": 9, "place_code": None, "lang": "mr", "device": "sos-phone-0001"}
+    r1 = anon.post("/api/sos", json=body)
+    r2 = anon.post("/api/sos", json=body)
+    check(r1.status_code == 201 and r1.json()["status"] == "received" and r1.json()["duplicate"] is False
+          and r2.status_code == 200 and r2.json()["duplicate"] is True and r2.json()["id"] == r1.json()["id"],
+          "an SOS is stored once (201); sending it again returns the same alert (200), never a duplicate")
+    st = anon.get(f"/api/sos/{cid}").json()
+    check(set(st) == {"id", "status", "received_at", "ack_at", "ack_message", "resolved_at"} and "note" not in st and "lat" not in st,
+          "the sending phone can read only its alert's state (no note, no location)")
+    check(anon.get(f"/api/sos/{_uuid()}").status_code == 404, "an unknown alert id → 404")
+    check(anon.post("/api/sos", json={**body, "client_id": str(_uuid()), "kind": "party"}).status_code == 422
+          and anon.post("/api/sos", json={**body, "client_id": "short"}).status_code == 422,
+          "an SOS needs a known kind and a random id from the phone")
+    check(anon.get("/api/ops/sos").status_code == 401 and anon.get("/api/ops/sos", headers=VOL2).status_code == 403,
+          "only operators and admins see SOS alerts (anonymous 401, volunteer 403)")
+    lst = anon.get("/api/ops/sos", headers=OPER).json()
+    mine = next(a for a in lst if a["id"] == r1.json()["id"])
+    check(mine["note"] == body["note"] and mine["lat"] == body["lat"] and mine["status"] == "received",
+          "an operator sees the alert with its note and location")
+    a = anon.post(f"/api/ops/sos/{mine['id']}/ack", json={"message": "A volunteer is coming to the steps"}, headers=OPER)
+    st = anon.get(f"/api/sos/{cid}").json()
+    check(a.status_code == 200 and st["status"] == "acknowledged" and st["ack_message"] == "A volunteer is coming to the steps"
+          and st["ack_at"], "after an operator acknowledges, the phone sees 'acknowledged' with the operator's message")
+    anon.post(f"/api/ops/sos/{mine['id']}/resolve", json={}, headers=OPER)
+    check(anon.get(f"/api/sos/{cid}").json()["status"] == "resolved"
+          and not any(x["id"] == mine["id"] for x in anon.get("/api/ops/sos", headers=OPER).json())
+          and anon.post(f"/api/ops/sos/{mine['id']}/ack", json={}, headers=OPER).status_code == 409,
+          "a resolved alert leaves the open list and cannot be acknowledged again")
+    statuses = []
+    for i in range(7):
+        statuses.append(anon.post("/api/sos", json={**body, "client_id": str(_uuid()), "device": "sos-flood-0002"}).status_code)
+    check(statuses.count(201) == 5 and statuses[-1] == 429, f"5 new alerts per phone per hour, then 429 ({statuses})")
+    # Many phones behind one carrier address: never refused, only marked.
+    crowd = [anon.post("/api/sos", json={**body, "client_id": str(_uuid()), "device": f"crowd-phone-{i:04d}"})
+             for i in range(70)]
+    flagged = [a for a in anon.get("/api/ops/sos", headers=OPER).json() if a["flood_suspect"]]
+    check(all(r.status_code == 201 for r in crowd) and len(flagged) >= 10,
+          f"70 SOS from different phones on one network address are all accepted; those past 60 an hour are marked ({len(flagged)} marked)")
+    ops = anon.get("/api/ops/sos", headers=OPER).json()
+    check(ops.index(next(a for a in ops if a["flood_suspect"])) > ops.index(next(a for a in ops if not a["flood_suspect"])),
+          "marked (possible flood) alerts are listed after the others, not dropped")
+    old_cid = str(_uuid())
+    old_id = anon.post("/api/sos", json={**body, "client_id": old_cid, "device": "sos-old-0003"}).json()["id"]
+    from app.db import SessionLocal as _S3, SosAlert as _SA3
+    from datetime import datetime as _dt3, timedelta as _td3
+
+    _db = _S3()
+    _db.query(_SA3).filter(_SA3.id == old_id).update({_SA3.created_at: _dt3.utcnow() - _td3(hours=49)})
+    _db.commit()
+    _db.close()
+    anon.get("/api/ops/sos", headers=OPER)
+    check(anon.get(f"/api/sos/{old_cid}").json()["status"] == "expired"
+          and not any(a["id"] == old_id for a in anon.get("/api/ops/sos", headers=OPER).json()),
+          "an alert nobody resolved for 48 h is closed as 'expired' (then deleted after the retention time)")
+    log = anon.get("/api/admin/audit?limit=50", headers=ADMIN).json()
+    sos_log = [e for e in log if e["action"].startswith("sos.")]
+    check(sos_log and not any("fainted" in e["summary"] or "20.00" in e["summary"] for e in sos_log),
+          "SOS audit entries hold no note or location")
+    from app.db import SessionLocal as _S2, SosAlert as _SA
+    from datetime import datetime as _dt, timedelta as _td
+
+    _db = _S2()
+    _db.query(_SA).filter(_SA.id == mine["id"]).update({_SA.resolved_at: _dt.utcnow() - _td(days=8)})
+    _db.commit()
+    _db.close()
+    anon.get("/api/ops/sos", headers=OPER)
+    check(anon.get(f"/api/sos/{cid}").status_code == 404, "a resolved alert is deleted after 7 days (location gone)")
+
+# Lost-person cases (Phase 6): operators only, minimal data, history, retention.
+with TestClient(app) as anon:
+    case = {"person_name": "Sunita", "approx_age": 9, "description": "Girl, red frock, white sandals",
+            "languages": "Marathi", "last_seen_note": "near Ramkund steps", "reporter_name": "Mother",
+            "reporter_contact": "98765 43210"}
+    check(anon.post("/api/ops/cases", json=case).status_code == 401
+          and anon.post("/api/ops/cases", json=case, headers=VOL2).status_code == 403
+          and anon.get("/api/ops/cases", headers=VOL2).status_code == 403,
+          "cases need an operator or admin (anonymous 401, volunteer 403)")
+    r = anon.post("/api/ops/cases", json=case, headers=OPER)
+    cs = r.json()
+    ref = cs["case_ref"]
+    check(r.status_code == 201 and _re.fullmatch(r"LP-[2-9A-HJKMNP-Z]{5}", ref) and cs["status"] == "NEW"
+          and cs["is_child"] is True and cs["history"][0]["action"] == "created",
+          f"an operator opens a case: a case number ({ref}), NEW, marked as a child (age 9), history started")
+    listed = next(x for x in anon.get("/api/ops/cases", headers=OPER).json() if x["case_ref"] == ref)
+    check(listed["reporter_contact"].startswith("••••") and listed["reporter_contact"].endswith("10")
+          and anon.get(f"/api/ops/cases/{ref}", headers=OPER).json()["reporter_contact"] == "98765 43210",
+          "a child's contact number is masked in lists, shown only when the case is opened")
+    v = cs["version"]
+    check(anon.post(f"/api/ops/cases/{ref}/status", json={"to": "REUNITED", "version": v}, headers=OPER).status_code == 400,
+          "marking a case REUNITED needs a note")
+    ok1 = anon.post(f"/api/ops/cases/{ref}/status", json={"to": "UNDER_REVIEW", "version": v}, headers=OPER)
+    stale = anon.post(f"/api/ops/cases/{ref}/status", json={"to": "ESCALATED", "note": "x", "version": v}, headers=OPER)
+    check(ok1.status_code == 200 and stale.status_code == 409,
+          "two operators changing the same case: the second, stale change is refused (409), not overwritten")
+    v = ok1.json()["version"]
+    upd = anon.put(f"/api/ops/cases/{ref}", json={**case, "description": "Girl, red frock, white sandals, braided hair",
+                                                     "version": v}, headers=OPER)
+    check(upd.status_code == 200 and "braided" in upd.json()["description"]
+          and anon.put(f"/api/ops/cases/{ref}", json={**case, "version": v}, headers=OPER).status_code == 409,
+          "editing details needs the current version")
+    v = upd.json()["version"]
+    check(anon.post(f"/api/ops/cases/{ref}/status", json={"to": "NEW", "version": v}, headers=OPER).status_code == 400,
+          "a case cannot go back to NEW")
+    r = anon.post(f"/api/ops/cases/{ref}/status", json={"to": "REUNITED", "note": "met mother at help desk 3", "version": v}, headers=OPER)
+    v = r.json()["version"]
+    r = anon.post(f"/api/ops/cases/{ref}/status", json={"to": "CLOSED", "note": "family left", "version": v}, headers=OPER)
+    d = r.json()
+    check(r.status_code == 200 and d["status"] == "CLOSED" and d["closed_at"] and d["allowed"] == []
+          and [h["to"] for h in d["history"] if h["action"] == "status"] == ["UNDER_REVIEW", "REUNITED", "CLOSED"],
+          "the case is reunited then closed; every step is in its history")
+    check(anon.post(f"/api/ops/cases/{ref}/status", json={"to": "UNDER_REVIEW", "version": d["version"]}, headers=OPER).status_code == 400
+          and anon.post(f"/api/ops/cases/{ref}/status", json={"to": "UNDER_REVIEW", "version": d["version"]}, headers=ADMIN).status_code == 200,
+          "a closed case is final for operators; only an admin can reopen it")
+    d = anon.get(f"/api/ops/cases/{ref}", headers=OPER).json()
+    anon.post(f"/api/ops/cases/{ref}/status", json={"to": "CLOSED", "note": "closed again", "version": d["version"]}, headers=OPER)
+    log = [e for e in anon.get("/api/admin/audit?limit=100", headers=ADMIN).json() if e["target"] == f"case:{ref}"]
+    check(log and not any(w in e["summary"] for e in log for w in ("Sunita", "98765", "frock", "Mother")),
+          "case audit entries hold the case number and statuses only — no names, contacts or descriptions")
+    check(anon.get("/api/ops/cases?q=frock", headers=OPER).json() == []
+          and any(x["case_ref"] == ref for x in anon.get("/api/ops/cases?status=CLOSED&q=frock", headers=OPER).json()),
+          "operators can search cases (open by default; closed on request)")
+    from app.db import LostCase as _LC, LostCaseEvent as _LE
+
+    _db = _S2()
+    _db.query(_LC).filter(_LC.case_ref == ref).update({_LC.closed_at: _dt.utcnow() - _td(days=31)})
+    _db.commit()
+    cid_ = _db.query(_LC.id).filter(_LC.case_ref == ref).scalar()
+    _db.close()
+    anon.get("/api/ops/cases", headers=OPER)
+    _db = _S2()
+    left = _db.query(_LE).filter(_LE.case_id == cid_).count()
+    _db.close()
+    check(anon.get(f"/api/ops/cases/{ref}", headers=OPER).status_code == 404 and left == 0,
+          "a closed case and its history are deleted after 30 days")
+    _cfg.cases_enabled = ""
+    _cfg.setu_env = "production"
+    try:
+        off = anon.get("/api/ops/cases", headers=OPER).status_code
+    finally:
+        _cfg.setu_env = "development"
+    check(off == 404, "lost-person cases are off on a production server until an authority approves (CASES_ENABLED=1)")
 
 print("\nALL OK" if ok else "\nSOME FAILED")
 sys.exit(0 if ok else 1)

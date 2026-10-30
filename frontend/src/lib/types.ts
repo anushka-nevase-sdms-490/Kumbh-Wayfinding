@@ -12,6 +12,19 @@ export type QrNode = {
   gps_accuracy_m?: number | null;
   /** Trust level (backend app/verification.py). */
   verification?: Verification;
+  /** Day a person last checked it (YYYY-MM-DD). */
+  verified_at?: string | null;
+  source?: string | null;
+  /** open | limited | closed — only claimed until op_status_until (lib/placeInfo.ts). */
+  op_status?: string | null;
+  op_status_until?: string | null;
+  op_status_note?: string | null;
+  op_status_at?: string | null;
+  step_free?: boolean | null;
+  access?: string | null;
+  access_note?: string | null;
+  /** Code printed on a Setu QR board at this place. */
+  board_code?: string | null;
 };
 
 /** How far data can be trusted; nothing is promoted automatically. */

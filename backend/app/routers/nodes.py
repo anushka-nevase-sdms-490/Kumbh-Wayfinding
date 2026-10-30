@@ -38,7 +38,7 @@ def create_node(
                 "code": existing.code,
             },
         )
-    node = QrNode(**body.model_dump(), updated_by=admin.id)
+    node = QrNode(**body.model_dump(), updated_by=admin.id, source="admin")
     db.add(node)
     audit(db, admin, "place.add", f"place:{node.code}", f"Added place {node.name}")
     db.commit()

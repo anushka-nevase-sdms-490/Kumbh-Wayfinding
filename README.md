@@ -32,6 +32,8 @@ Stop with **Ctrl+C**.
 |---|---|
 | **The 8 phases: done and remaining** | [docs/Setu_Development_Phases.pdf](docs/Setu_Development_Phases.pdf) (one page) · [docs/REMAINING_WORK_ROADMAP.md](docs/REMAINING_WORK_ROADMAP.md) |
 | Audit against the new goals | [docs/PROJECT_IMPLEMENTATION_AUDIT.md](docs/PROJECT_IMPLEMENTATION_AUDIT.md) · [docs/REQUIREMENT_TRACEABILITY_MATRIX.md](docs/REQUIREMENT_TRACEABILITY_MATRIX.md) |
+| QR boards, facility status, search | [docs/QR_BOARDS_AND_FACILITY_STATUS.md](docs/QR_BOARDS_AND_FACILITY_STATUS.md) |
+| SOS alerts and lost-person cases | [docs/SOS_AND_LOST_PERSONS.md](docs/SOS_AND_LOST_PERSONS.md) |
 | What is known not to work yet | [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) |
 | Ready to deploy? What is missing | [docs/DEPLOYMENT_READINESS.md](docs/DEPLOYMENT_READINESS.md) · [deploy/README.md](deploy/README.md) |
 | Tests, results, what is not tested | [docs/TESTING_AND_QA.md](docs/TESTING_AND_QA.md) |

@@ -40,6 +40,14 @@ import { VolunteerPathHeading } from "./components/VolunteerPathHeading";
 import { VolunteerLogin } from "./components/VolunteerLogin";
 import { AUTH_EXPIRED_EVENT, loadAuth, logout, type StoredAuth } from "./lib/auth";
 import { OfflineMapCard } from "./components/OfflineMapCard";
+import { PlaceBadges } from "./components/PlaceBadges";
+import { BoardCodeEntry } from "./components/BoardCodeEntry";
+import { SosScreen } from "./components/SosScreen";
+import { AssistantScreen } from "./components/AssistantScreen";
+import { OpsSos } from "./components/OpsSos";
+import { OpsCases, type CasePrefill } from "./components/OpsCases";
+import { flushSos, httpTransport, idbSos } from "./lib/sos";
+import { opStatus, resolveBoard, searchPlaces } from "./lib/placeInfo";
 import { LangPicker } from "./components/LangPicker";
 import { useI18n } from "./i18n/context";
 import { instructionLines, turnText } from "./i18n/instructions";
@@ -92,8 +100,8 @@ function OfflineMap(props: ComponentProps<typeof LazyOfflineMap>) {
 }
 
 type Mode = "gate" | "user" | "volunteer";
-type UserStep = "home" | "start" | "destination" | "guide";
-type VolStep = "home" | "register" | "path-heading" | "obstacle" | "admin";
+type UserStep = "home" | "start" | "destination" | "guide" | "sos" | "ask";
+type VolStep = "home" | "register" | "path-heading" | "obstacle" | "admin" | "sos-ops" | "cases";
 
 const API = apiBase();
 /** Re-check the server for a newer pack at most this often when the app is reopened. */
@@ -160,6 +168,8 @@ export default function App() {
   const [pack, setPack] = useState<OfflinePack>(FALLBACK_PACK);
   const [step, setStep] = useState<UserStep>("home");
   const [volStep, setVolStep] = useState<VolStep>("home");
+  /** A "someone is lost" SOS alert an operator is turning into a case. */
+  const [casePrefill, setCasePrefill] = useState<CasePrefill | null>(null);
   const [start, setStart] = useState<QrNode | null>(null);
   const [dest, setDest] = useState<QrNode | null>(null);
   const [gpsArrived, setGpsArrived] = useState(false);
@@ -180,6 +190,25 @@ export default function App() {
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+  }, []);
+
+  // SOS alerts saved on this phone: sent, and their state refreshed, whatever
+  // screen is open (at start, on reconnect, and every 20 s).
+  useEffect(() => {
+    const transport = httpTransport(API);
+    const tick = () => void flushSos(idbSos, transport).catch(() => undefined);
+    tick();
+    window.addEventListener("online", tick);
+    const timer = window.setInterval(() => {
+      void idbSos
+        .list()
+        .then((l) => l.some((i) => i.state === "pending" || i.state === "sent" || i.state === "acknowledged") && tick())
+        .catch(() => undefined);
+    }, 20_000);
+    return () => {
+      window.removeEventListener("online", tick);
+      window.clearInterval(timer);
+    };
   }, []);
 
   const reloadPackRef = useRef<() => Promise<unknown>>(async () => undefined);
@@ -218,6 +247,14 @@ export default function App() {
   const [packSavedAt, setPackSavedAt] = useState<string | null>(null);
   /** Last answer from the server's pack check (why routes may be missing). */
   const [packCheck, setPackCheck] = useState<PackCheck | null>(null);
+  /** The start was set from a Setu board (scanned link or typed code). */
+  const [boardCode, setBoardCode] = useState<string | null>(null);
+  const [boardMsg, setBoardMsg] = useState<string | null>(null);
+  const [placeQuery, setPlaceQuery] = useState("");
+  /** ?at=<board or place code> from a scanned board, resolved once the data is loaded. */
+  const pendingAt = useRef<string | null>(
+    typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("at")
+  );
   const [packCheckAt, setPackCheckAt] = useState<string | null>(null);
   /** A problem with the copy on the phone (storage full, damaged copy removed). */
   const [storageNote, setStorageNote] = useState<"full" | "damaged" | null>(null);
@@ -354,13 +391,42 @@ export default function App() {
     : "all";
   const filteredDestinations = useMemo(
     () =>
-      destinations.filter(
-        (n) =>
-          (activeArea === "all" || areaOf(n) === activeArea) &&
-          (activeCategory === "all" || siteCategory(n.node_type) === activeCategory)
+      searchPlaces(
+        destinations.filter(
+          (n) =>
+            (activeArea === "all" || areaOf(n) === activeArea) &&
+            (activeCategory === "all" || siteCategory(n.node_type) === activeCategory)
+        ),
+        placeQuery,
+        (n) => categoryLabel(n.node_type)
       ),
-    [destinations, activeArea, activeCategory]
+    // categoryLabel follows the language (t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [destinations, activeArea, activeCategory, placeQuery, t]
   );
+
+  // A scanned board link (/?at=K7M4Q): "You are at <place>", straight to choosing a destination.
+  // "Unknown" is only said once the newest data had its chance: online, after the
+  // update check (a new board is not in an older saved copy); offline, at once.
+  useEffect(() => {
+    const raw = pendingAt.current;
+    if (!raw) return;
+    const r = resolveBoard(pack.nodes, raw);
+    const settled = packCheck !== null || !navigator.onLine;
+    if (r.kind !== "found" && !settled) return;
+    pendingAt.current = null;
+    window.history.replaceState({}, "", window.location.pathname);
+    setMode("user");
+    if (r.kind === "found") {
+      setStart(r.node);
+      setBoardCode(r.boardCode);
+      setBoardMsg(null);
+      setStep("destination");
+    } else {
+      setBoardMsg(r.kind === "unknown" ? t("board.unknown", { code: r.code }) : t("board.invalid"));
+      setStep("start");
+    }
+  }, [pack, packCheck, t]);
 
   const routeOptions = useMemo(
     () => ({ blockedKeys: sessionBlocked, preferClearanceM: 1.0 }),
@@ -480,7 +546,7 @@ export default function App() {
   // Real GPS and simulation are separate sources; the simulation never touches the phone's GPS.
   const locationProvider: LocationProvider | null = simOn ? simProvider : RealGPSProvider;
   const live = useLivePosition(
-    (guideActive || (mode === "user" && step === "start")) && locationProvider !== null,
+    (guideActive || (mode === "user" && (step === "start" || step === "sos" || step === "ask"))) && locationProvider !== null,
     locationProvider ?? RealGPSProvider
   );
   const gpsAllowed =
@@ -534,17 +600,16 @@ export default function App() {
     setGpsMsg(null);
   }, [dest?.code, start?.code, step]);
 
+  // Keyed on the codes: a refreshed pack gives new place objects for the same trip.
+  const startCode = start?.code;
+  const destCode = dest?.code;
   useEffect(() => {
-    if (step !== "guide") {
-      setNavState("IDLE");
-      return;
-    }
-    if (!start || !dest) {
+    if (step !== "guide" || !startCode || !destCode) {
       setNavState("IDLE");
       return;
     }
     setNavState((s) => nextNavState(s === "IDLE" ? "ROUTING" : s, "START_ROUTE"));
-  }, [step, start?.code, dest?.code]);
+  }, [step, startCode, destCode]);
 
   useEffect(() => {
     if (step !== "guide" || !start || !dest) return;
@@ -917,6 +982,37 @@ export default function App() {
                 </span>
                 <ChevronIcon size={20} className="action-chevron" />
               </button>
+              {(auth?.volunteer.role === "operator" || auth?.volunteer.role === "admin") && (
+                <>
+                  <button type="button" className="action-card sos-card" onClick={() => setVolStep("sos-ops")}>
+                    <span className="action-icon" aria-hidden>
+                      !
+                    </span>
+                    <span className="action-text">
+                      <strong>SOS alerts</strong>
+                      <small>Visitors asking for help — acknowledge and resolve</small>
+                    </span>
+                    <ChevronIcon size={20} className="action-chevron" />
+                  </button>
+                  <button
+                    type="button"
+                    className="action-card"
+                    onClick={() => {
+                      setCasePrefill(null);
+                      setVolStep("cases");
+                    }}
+                  >
+                    <span className="action-icon" aria-hidden>
+                      ?
+                    </span>
+                    <span className="action-text">
+                      <strong>Lost persons</strong>
+                      <small>Cases for authorized operators</small>
+                    </span>
+                    <ChevronIcon size={20} className="action-chevron" />
+                  </button>
+                </>
+              )}
               {auth?.volunteer.role === "admin" && (
                 <button
                   type="button"
@@ -953,6 +1049,31 @@ export default function App() {
             onBack={() => setVolStep("home")}
             onSaved={() => {
               void reloadPack();
+            }}
+          />
+        )}
+
+        {volStep === "sos-ops" && (
+          <OpsSos
+            apiBase={API}
+            places={registeredPlaces}
+            onBack={() => setVolStep("home")}
+            onOpenCase={(a) => {
+              setCasePrefill({ sosId: a.id, note: a.note, placeCode: a.placeCode });
+              setVolStep("cases");
+            }}
+          />
+        )}
+
+        {volStep === "cases" && (
+          <OpsCases
+            key={casePrefill?.sosId ?? "list"}
+            apiBase={API}
+            places={registeredPlaces}
+            prefill={casePrefill}
+            onBack={() => {
+              setCasePrefill(null);
+              setVolStep("home");
             }}
           />
         )}
@@ -1035,6 +1156,26 @@ export default function App() {
               </span>
               <ChevronIcon size={20} className="action-chevron" />
             </button>
+            <button type="button" className="action-card" onClick={() => setStep("ask")}>
+              <span className="action-icon" aria-hidden>
+                ?
+              </span>
+              <span className="action-text">
+                <strong>{t("ask.cta")}</strong>
+                <small>{t("ask.ctaHint")}</small>
+              </span>
+              <ChevronIcon size={20} className="action-chevron" />
+            </button>
+            <button type="button" className="action-card sos-card" onClick={() => setStep("sos")}>
+              <span className="action-icon" aria-hidden>
+                !
+              </span>
+              <span className="action-text">
+                <strong>{t("sos.cta")}</strong>
+                <small>{t("sos.ctaHint")}</small>
+              </span>
+              <ChevronIcon size={20} className="action-chevron" />
+            </button>
           </div>
           <OfflineMapCard />
           <p className="pack-status">
@@ -1092,6 +1233,40 @@ export default function App() {
             </p>
           )}
         </section>
+      )}
+
+      {step === "ask" && (
+        <AssistantScreen
+          places={registeredPlaces}
+          from={
+            live.pos && live.pos.usable
+              ? { lat: live.pos.lat, lon: live.pos.lon }
+              : start
+                ? { lat: start.lat, lon: start.lon }
+                : null
+          }
+          dataTime={packSource === "bundled" ? null : formatPackTime(`${lang}-IN`, pack.generated_at, packSavedAt)}
+          onBack={() => setStep("home")}
+          onRoute={(node) => {
+            setDest(node);
+            setStep(start && start.code !== node.code ? "guide" : "start");
+          }}
+        />
+      )}
+
+      {step === "sos" && (
+        <SosScreen
+          apiBase={API}
+          places={registeredPlaces}
+          position={live.pos && live.pos.usable ? { lat: live.pos.lat, lon: live.pos.lon, accuracyM: live.pos.accuracyM } : null}
+          start={start}
+          device={deviceId()}
+          onBack={() => setStep("home")}
+          onRoute={(node) => {
+            setDest(node);
+            setStep(start && start.code !== node.code ? "guide" : "start");
+          }}
+        />
       )}
 
       {step === "start" && (
@@ -1171,6 +1346,24 @@ export default function App() {
             )}
           </div>
 
+          <BoardCodeEntry
+            nodes={pack.nodes}
+            onFound={(node, code) => {
+              setStart(node);
+              setBoardCode(code);
+              setBoardMsg(null);
+              setStep("destination");
+            }}
+            onUnknown={() => {
+              if (navigator.onLine) void reloadPack();
+            }}
+          />
+          {boardMsg && (
+            <p className="gps-status err" role="alert">
+              {boardMsg}
+            </p>
+          )}
+
           <p className="section-label">
             {startList.some((p) => p.distanceM != null)
               ? t("start.allNearest")
@@ -1191,6 +1384,7 @@ export default function App() {
                   className={`place ${start?.code === n.code ? "active" : ""}`}
                   onClick={() => {
                     setStart(n);
+                    setBoardCode(null);
                     setStep("destination");
                   }}
                 >
@@ -1237,13 +1431,27 @@ export default function App() {
               <PlaceIcon type={start.node_type} size={18} />
             </span>
             <span className="start-chip-text">
-              <small>{t("dest.youAreAt")}</small>
+              <small>
+                {t("dest.youAreAt")}
+                {boardCode ? ` · ${t("board.fromBoard", { code: boardCode })}` : ""}
+              </small>
               <strong>{placeName(start)}</strong>
+              <PlaceBadges node={start} compact />
             </span>
             <button type="button" onClick={() => setStep("start")}>
               {t("dest.change")}
             </button>
           </div>
+          {destinations.length > 0 && (
+            <input
+              className="place-search"
+              type="search"
+              value={placeQuery}
+              onChange={(e) => setPlaceQuery(e.target.value)}
+              placeholder={t("search.placeholder")}
+              aria-label={t("search.label")}
+            />
+          )}
           {destinations.length === 0 ? (
             <div className="empty-state">
               <PinPlusIcon size={28} />
@@ -1284,7 +1492,7 @@ export default function App() {
             )}
             {filteredDestinations.length === 0 && (
               <div className="empty-state">
-                <strong>{t("dest.noMatch")}</strong>
+                <strong>{placeQuery.trim() ? t("search.none", { q: placeQuery.trim() }) : t("dest.noMatch")}</strong>
               </div>
             )}
             <div className="dest-grid">
@@ -1311,6 +1519,7 @@ export default function App() {
                   <strong>{placeLabel(n)}</strong>
                   {placeAltLabel(n) && <span className="dest-local">{placeAltLabel(n)}</span>}
                   <small>{categoryLabel(n.node_type)}</small>
+                  <PlaceBadges node={n} compact />
                 </button>
               ))}
             </div>
@@ -1429,6 +1638,15 @@ export default function App() {
             {usesMapRoads && (
               <p className="guide-gps warn">{t("guide.mapRoads")}</p>
             )}
+            {(() => {
+              const s = opStatus(dest);
+              return s.kind === "closed" || s.kind === "limited" ? (
+                <p className="guide-gps warn" role="status">
+                  {t(s.kind === "closed" ? "guide.destClosed" : "guide.destLimited", { name: placeLabel(dest) })}
+                  {s.note ? ` (${s.note})` : ""}
+                </p>
+              ) : null;
+            })()}
             <p className="guide-gps">
               {simOn ? "[SIM] " : ""}
               {!mapYou && !gpsAllowed

@@ -9,7 +9,7 @@ from .db import init_db
 from .idempotency import idempotency_middleware
 from .body_limit import BodySizeLimit
 from . import auth
-from .routers import admin, nodes, pack, reports, volunteer
+from .routers import admin, cases, nodes, pack, reports, sos, volunteer
 from .seed import seed
 
 
@@ -50,7 +50,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
     # The volunteer queue reads these to tell "still being saved" from a refusal.
     expose_headers=["Retry-After", "Idempotent-Replay"],
@@ -67,6 +67,8 @@ app.include_router(pack.router)
 app.include_router(volunteer.router)
 app.include_router(reports.router)
 app.include_router(admin.router)
+app.include_router(sos.router)
+app.include_router(cases.router)
 
 
 @app.get("/health")

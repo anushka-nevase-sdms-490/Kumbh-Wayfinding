@@ -6,10 +6,10 @@ the lanes between them. Older databases still hold the fictional SETU-*
 demo grid, so it is removed here.
 """
 
-from sqlalchemy import or_
+from sqlalchemy import inspect, or_, text
 from sqlalchemy.orm import Session
 
-from .db import AuditPhoto, Edge, PackVersion, QrNode, SessionLocal, init_db
+from .db import Edge, PackVersion, QrNode, SessionLocal, engine, init_db
 from .services.pack_builder import ensure_current_pack
 
 DEMO_CODE_PREFIX = "SETU-"
@@ -22,9 +22,10 @@ def _remove_demo_places(db: Session) -> int:
         .filter(or_(Edge.from_code.like(like), Edge.to_code.like(like)))
         .delete(synchronize_session=False)
     )
-    db.query(AuditPhoto).filter(AuditPhoto.code.like(like)).delete(
-        synchronize_session=False
-    )
+    # Old databases may still have the unused audit_photos table (removed
+    # from the code); its demo rows point at the demo places, so clear them first.
+    if inspect(engine).has_table("audit_photos"):
+        db.execute(text("DELETE FROM audit_photos WHERE code LIKE :like"), {"like": like})
     nodes = (
         db.query(QrNode)
         .filter(QrNode.code.like(like))

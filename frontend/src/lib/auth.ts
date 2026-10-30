@@ -3,7 +3,7 @@
  * shift; when the server says it has expired, `authFetch` forgets it and
  * tells the app to show the sign-in sheet again.
  */
-export type Volunteer = { id: number; phone: string; name: string; role: "volunteer" | "admin" };
+export type Volunteer = { id: number; phone: string; name: string; role: "volunteer" | "operator" | "admin" };
 export type StoredAuth = { token: string; expiresAt: string; volunteer: Volunteer };
 
 const KEY = "setu-auth";

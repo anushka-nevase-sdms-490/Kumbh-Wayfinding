@@ -58,7 +58,7 @@ def main() -> int:
     add = sub.add_parser("add")
     add.add_argument("phone")
     add.add_argument("name")
-    add.add_argument("--role", choices=["volunteer", "admin"], default="volunteer")
+    add.add_argument("--role", choices=["volunteer", "operator", "admin"], default="volunteer")
     sub.add_parser("list")
     for cmd in ("reset-pin", "disable", "enable", "revoke"):
         sub.add_parser(cmd).add_argument("phone")

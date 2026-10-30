@@ -6,6 +6,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     Float,
+    Index,
     ForeignKey,
     Integer,
     String,
@@ -30,7 +31,7 @@ class Volunteer(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     phone = Column(String(16), unique=True, nullable=False, index=True)
     name = Column(String(128), nullable=False)
-    role = Column(String(16), nullable=False, default="volunteer")  # volunteer | admin
+    role = Column(String(16), nullable=False, default="volunteer")  # volunteer | operator | admin
     pin_hash = Column(String(256), nullable=False)
     active = Column(Boolean, nullable=False, default=True)
     failed_logins = Column(Integer, nullable=False, default=0)
@@ -49,6 +50,11 @@ class AuthSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=False)
     revoked = Column(Boolean, nullable=False, default=False)
+
+
+def _default_source(ctx) -> str:
+    code = (ctx.get_current_parameters().get("code") or "").upper()
+    return "osm" if code.startswith("OSM-") else "volunteer"
 
 
 class QrNode(Base):
@@ -75,6 +81,25 @@ class QrNode(Base):
     # Who set the trust level, when, and why (admin review).
     verified_by = Column(Integer, ForeignKey("volunteers.id"), nullable=True)
     verification_note = Column(String(256), nullable=True)
+    # When a person last checked it (on-site GPS or an admin review).
+    verified_at = Column(DateTime, nullable=True)
+    # Where it came from: osm | volunteer | admin.
+    source = Column(String(16), nullable=True, default=_default_source)
+    # Operational status. Live like lane closures: reaches phones at once,
+    # and is no longer claimed after op_status_until (it never goes stale).
+    op_status = Column(String(12), nullable=True)  # open | limited | closed; NULL = not known
+    op_status_until = Column(DateTime, nullable=True)
+    op_status_note = Column(String(120), nullable=True)
+    op_status_at = Column(DateTime, nullable=True)
+    op_status_by = Column(Integer, ForeignKey("volunteers.id"), nullable=True)
+    # Access, published with the data.
+    step_free = Column(Boolean, nullable=True)
+    access = Column(String(16), nullable=True)  # public | restricted
+    access_note = Column(String(120), nullable=True)
+    # Short code printed on a Setu QR board here: stable, unique, never reused.
+    board_code = Column(String(12), nullable=True)
+
+    __table_args__ = (Index("ix_qr_nodes_board_code", "board_code", unique=True),)
 
 
 class Edge(Base):
@@ -145,16 +170,6 @@ class BlockReport(Base):
     resolved_at = Column(DateTime, nullable=True)
 
 
-class AuditPhoto(Base):
-    __tablename__ = "audit_photos"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(32), ForeignKey("qr_nodes.code"), nullable=False, index=True)
-    object_key = Column(String(256), nullable=False)
-    note = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
 class PackVersion(Base):
     __tablename__ = "pack_versions"
 
@@ -165,6 +180,88 @@ class PackVersion(Base):
     node_count = Column(Integer, nullable=False, default=0)
     edge_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SosAlert(Base):
+    """
+    A visitor's "I need help" (Phase 6). Public to send, operator-only to read.
+    `client_id` is a random id made on the phone: sending it again returns the
+    same alert (never a duplicate), and it is the phone's key to ask for the
+    status. Deleted sos_retention_days after it is resolved.
+    """
+
+    __tablename__ = "sos_alerts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    client_id = Column(String(64), unique=True, nullable=False, index=True)
+    kind = Column(String(16), nullable=False)  # medical | lost | unsafe | other
+    note = Column(String(280), nullable=True)
+    lat = Column(Float, nullable=True)
+    lon = Column(Float, nullable=True)
+    accuracy_m = Column(Float, nullable=True)
+    place_code = Column(String(32), nullable=True)
+    lang = Column(String(4), nullable=True)
+    device_hash = Column(String(64), nullable=True, index=True)
+    ip_hash = Column(String(64), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    # received | acknowledged | resolved | expired (open 48 h with nobody resolving it)
+    status = Column(String(16), nullable=False, default="received")
+    # Many alerts from the same network address within an hour: accepted (never
+    # refused — thousands of phones share a carrier address) but marked for operators.
+    flood_suspect = Column(Boolean, nullable=False, default=False)
+    ack_at = Column(DateTime, nullable=True)
+    ack_by = Column(Integer, ForeignKey("volunteers.id"), nullable=True)
+    ack_message = Column(String(200), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(Integer, ForeignKey("volunteers.id"), nullable=True)
+
+
+class LostCase(Base):
+    """
+    A lost-person case (Phase 6), operators and admins only. Minimal personal
+    data; contact details masked in lists; deleted case_retention_days after
+    it is closed. `version` stops two operators overwriting each other.
+    """
+
+    __tablename__ = "lost_cases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    case_ref = Column(String(12), unique=True, nullable=False, index=True)
+    status = Column(String(16), nullable=False, default="NEW")
+    person_name = Column(String(80), nullable=True)
+    approx_age = Column(Integer, nullable=True)
+    is_child = Column(Boolean, nullable=False, default=False)
+    gender = Column(String(12), nullable=True)
+    description = Column(String(500), nullable=False)
+    languages = Column(String(60), nullable=True)
+    last_seen_place_code = Column(String(32), nullable=True)
+    last_seen_note = Column(String(200), nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    reporter_name = Column(String(80), nullable=True)
+    reporter_contact = Column(String(20), nullable=True)
+    outcome_note = Column(String(200), nullable=True)
+    sos_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_by = Column(Integer, ForeignKey("volunteers.id"), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_by = Column(Integer, ForeignKey("volunteers.id"), nullable=True)
+    closed_at = Column(DateTime, nullable=True, index=True)
+    version = Column(Integer, nullable=False, default=1)
+
+
+class LostCaseEvent(Base):
+    """A case's history (who, when, what changed) — deleted with the case."""
+
+    __tablename__ = "lost_case_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    case_id = Column(Integer, ForeignKey("lost_cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    actor_name = Column(String(128), nullable=True)
+    action = Column(String(24), nullable=False)
+    from_status = Column(String(16), nullable=True)
+    to_status = Column(String(16), nullable=True)
+    note = Column(String(200), nullable=True)
 
 
 class DatasetRelease(Base):
@@ -253,6 +350,7 @@ def init_db():
 # tables but never alters existing ones (SQLite or Postgres).
 _ADDED_COLUMNS = {
     "block_reports": {"device_hash": "VARCHAR(64)"},
+    "sos_alerts": {"flood_suspect": "BOOLEAN DEFAULT FALSE"},
     "qr_nodes": {
         "local_name": "VARCHAR(128)",
         "gps_accuracy_m": "FLOAT",
@@ -260,6 +358,17 @@ _ADDED_COLUMNS = {
         "verification": "VARCHAR(24)",
         "verified_by": "INTEGER REFERENCES volunteers(id)",
         "verification_note": "VARCHAR(256)",
+        "verified_at": "TIMESTAMP",
+        "source": "VARCHAR(16)",
+        "op_status": "VARCHAR(12)",
+        "op_status_until": "TIMESTAMP",
+        "op_status_note": "VARCHAR(120)",
+        "op_status_at": "TIMESTAMP",
+        "op_status_by": "INTEGER REFERENCES volunteers(id)",
+        "step_free": "BOOLEAN",
+        "access": "VARCHAR(16)",
+        "access_note": "VARCHAR(120)",
+        "board_code": "VARCHAR(12)",
     },
     "edges": {
         "heading_ab": "FLOAT",
@@ -297,6 +406,11 @@ def _ensure_columns():
             for name, ddl in columns.items():
                 if name not in have:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+        if insp.has_table("qr_nodes"):
+            # A board code must point at exactly one place (NULLs allowed).
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_qr_nodes_board_code ON qr_nodes (board_code)"
+            ))
         _backfill_verification(conn)
 
 
@@ -315,6 +429,20 @@ def _backfill_verification(conn):
         "WHEN code LIKE 'OSM-%' THEN 'osm_imported' "
         "ELSE 'unverified' END WHERE verification IS NULL"
     ))
+    from sqlalchemy import inspect
+
+    place_cols = {c["name"] for c in inspect(conn).get_columns("qr_nodes")}
+    if "source" in place_cols:
+        conn.execute(text(
+            "UPDATE qr_nodes SET source = CASE WHEN code LIKE 'OSM-%' THEN 'osm' ELSE 'volunteer' END "
+            "WHERE source IS NULL"
+        ))
+    if {"verified_at", "updated_at"} <= place_cols:
+        # A person's check from before the date was kept: the last save is the best known date.
+        conn.execute(text(
+            "UPDATE qr_nodes SET verified_at = updated_at WHERE verified_at IS NULL "
+            "AND verification IN ('volunteer_verified', 'officially_verified', 'remotely_reviewed')"
+        ))
     conn.execute(text(
         "UPDATE edges SET verification = CASE "
         "WHEN source = 'osm' THEN 'osm_imported' "

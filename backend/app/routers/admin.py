@@ -1,19 +1,32 @@
 """Admin map data: every place and lane (blocked ones too) and pending reports."""
 import json
+import secrets
+from datetime import datetime, timedelta
+
+from sqlalchemy.exc import IntegrityError
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..audit import audit
-from ..auth import require_admin
+from ..auth import require_admin, require_operator
 from ..db import AuditLog, Edge, QrNode, Volunteer, get_db
 from ..config import publishing_manual, settings
 from ..db import DatasetRelease
-from ..schemas import AdminOverview, PublishRequest, RollbackRequest, VerifyRequest
+from ..schemas import (
+    AdminOverview,
+    BoardRequest,
+    PlaceAccessRequest,
+    PlaceStatusRequest,
+    PublishRequest,
+    RollbackRequest,
+    VerifyRequest,
+)
 from ..services.graph_report import validate
 from ..services.osm_network import is_network_junction_code
 from ..services.pack_builder import (
     CLOSURE_FIELDS,
+    PLACE_LIVE_FIELDS,
     draft_data,
     ensure_current_pack,
     expire_blocks,
@@ -41,6 +54,13 @@ def overview(db: Session = Depends(get_db), admin: Volunteer = Depends(require_a
                 "confirmed": n.gps_accuracy_m is not None,
                 "verification": n.verification or "unverified",
                 "verification_note": n.verification_note,
+                "op_status": n.op_status,
+                "op_status_until": n.op_status_until,
+                "op_status_note": n.op_status_note,
+                "step_free": n.step_free,
+                "access": n.access,
+                "access_note": n.access_note,
+                "board_code": n.board_code,
             }
             for n in nodes
             if not is_network_junction_code(n.code)
@@ -79,7 +99,7 @@ def graph_report(db: Session = Depends(get_db), admin: Volunteer = Depends(requi
 
 # Fields that do not make a place or lane "changed" for publishing: closures go
 # live anyway, timestamps change on every touch.
-_NOT_A_CHANGE = set(CLOSURE_FIELDS) | {"created_at", "updated_at", "verified_at"}
+_NOT_A_CHANGE = set(CLOSURE_FIELDS) | set(PLACE_LIVE_FIELDS) | {"created_at", "updated_at", "verified_at"}
 
 
 def _changes(old: list[dict], new: list[dict], key: str) -> tuple[list, list, list]:
@@ -181,6 +201,114 @@ def audit_log(
     ]
 
 
+def _place(db: Session, code: str) -> QrNode:
+    row = db.query(QrNode).filter(QrNode.code == code.strip().upper()).first()
+    if row is None or is_network_junction_code(row.code):
+        raise HTTPException(404, "No such place")
+    return row
+
+
+@router.post("/place-status")
+def set_place_status(
+    body: PlaceStatusRequest, db: Session = Depends(get_db), vol: Volunteer = Depends(require_operator)
+):
+    """
+    Open / limited / closed, valid for a number of hours: after that the app
+    says "status not confirmed" instead of a stale "open". Live: reaches
+    phones at once, like a lane closure.
+    """
+    row = _place(db, body.code)
+    now = datetime.utcnow()
+    if body.status == "unknown":
+        row.op_status = row.op_status_until = row.op_status_note = None
+    else:
+        row.op_status = body.status
+        row.op_status_until = now + timedelta(hours=body.hours)
+        row.op_status_note = (body.note or "").strip() or None
+    row.op_status_at, row.op_status_by = now, vol.id
+    audit(db, vol, "place.status", f"place:{row.code}",
+          f"{row.name}: {body.status}" + (f" for {body.hours:g} h" if body.status != "unknown" else "")
+          + (f" — {row.op_status_note}" if row.op_status_note else ""))
+    db.commit()
+    ensure_current_pack(db)
+    return {"success": True, "op_status": row.op_status, "op_status_until": row.op_status_until}
+
+
+@router.post("/place-access")
+def set_place_access(
+    body: PlaceAccessRequest, db: Session = Depends(get_db), admin: Volunteer = Depends(require_admin)
+):
+    """Step-free access and access restrictions (published with the data)."""
+    row = _place(db, body.code)
+    row.step_free, row.access = body.step_free, body.access
+    row.access_note = (body.access_note or "").strip() or None
+    row.updated_by = admin.id
+    audit(db, admin, "place.access", f"place:{row.code}",
+          f"{row.name}: step-free {body.step_free}, access {body.access or 'not set'}"
+          + (f" — {row.access_note}" if row.access_note else ""))
+    db.commit()
+    ensure_current_pack(db)
+    return {"success": True}
+
+
+# Board codes: 5 characters without look-alikes (no 0/O, 1/I/L).
+BOARD_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+
+
+def _new_board_code(db: Session) -> str:
+    for _ in range(50):
+        code = "".join(secrets.choice(BOARD_ALPHABET) for _ in range(5))
+        taken = db.query(QrNode).filter(QrNode.board_code == code).first()
+        # A retired code is never given to another place (boards may still hang there).
+        used_before = db.query(AuditLog).filter(AuditLog.target == f"board:{code}").first()
+        if not taken and not used_before:
+            return code
+    raise HTTPException(503, "Could not make a unique board code — try again")
+
+
+@router.post("/board")
+def create_board(body: BoardRequest, db: Session = Depends(get_db), admin: Volunteer = Depends(require_admin)):
+    """
+    Give a place a board code for a printed QR board. The QR holds
+    https://<site>/?at=<code>; the code is also printed for typing. A place
+    keeps its code: asking again returns the same one.
+    """
+    row = _place(db, body.code)
+    if row.verification == "rejected":
+        raise HTTPException(400, "This place is rejected — it cannot have a board")
+    if row.board_code:
+        return {"success": True, "board_code": row.board_code, "created": False}
+    row.board_code = _new_board_code(db)
+    audit(db, admin, "board.create", f"board:{row.board_code}", f"Board {row.board_code} for {row.name} ({row.code})")
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "That board code was just taken — try again")
+    ensure_current_pack(db)
+    return {"success": True, "board_code": row.board_code, "created": True}
+
+
+@router.post("/board/retire")
+def retire_board(body: BoardRequest, db: Session = Depends(get_db), admin: Volunteer = Depends(require_admin)):
+    """A board on the wrong place (or removed): its code stops working and is never reused."""
+    row = _place(db, body.code)
+    if not row.board_code:
+        raise HTTPException(404, "This place has no board code")
+    old = row.board_code
+    row.board_code = None
+    audit(db, admin, "board.retire", f"board:{old}", f"Board {old} retired from {row.name} ({row.code})")
+    db.commit()
+    ensure_current_pack(db)
+    return {"success": True, "retired": old}
+
+
+@router.get("/boards")
+def list_boards(db: Session = Depends(get_db), admin: Volunteer = Depends(require_admin)):
+    rows = db.query(QrNode).filter(QrNode.board_code.isnot(None)).order_by(QrNode.name).all()
+    return [{"code": r.code, "name": r.name, "local_name": r.local_name, "board_code": r.board_code} for r in rows]
+
+
 @router.post("/verify")
 def set_verification(
     body: VerifyRequest, db: Session = Depends(get_db), admin: Volunteer = Depends(require_admin)
@@ -204,6 +332,8 @@ def set_verification(
           f"{name}: {before} → {body.status}" + (f" — {body.note.strip()}" if (body.note or "").strip() else ""))
     row.verification = body.status
     row.verified_by = admin.id
+    if body.target == "place" and body.status in ("remotely_reviewed", "volunteer_verified", "officially_verified"):
+        row.verified_at = datetime.utcnow()
     row.verification_note = (body.note or "").strip() or None
     row.updated_by = admin.id
     db.commit()

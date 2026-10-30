@@ -17,7 +17,15 @@ cd ../backend
 SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
   .venv/bin/python scripts/run_api_checks.py                # the same on an EMPTY Postgres database
 .venv/bin/python scripts/validate_graph.py                  # data checks on the real database; must end with OK
+.venv/bin/python scripts/check_migration.py                 # an old database (commit e6883e2) upgrades without loss
+.venv/bin/python scripts/smoke_browser.py                   # real headless Chrome on a COPY of the database
 ```
+
+**Browser smoke test** (`smoke_browser.py`, Phase 5):
+- builds the app, then runs the API on a copy of `setu_local.db` with a throwaway account, plus `vite preview`;
+- drives headless Chrome with a small built-in DevTools client (`cdp.py`, standard library only);
+- checks: first visit, map download, **airplane mode with both servers stopped**, Hindi, scanned and typed board codes (also offline), search, the closed-facility warning, and the volunteer offline queue end to end;
+- refuses to run if ports 8010 / 4173 are busy, and never touches the real database.
 
 **The API checks never use the network:**
 - they use saved fixtures (`backend/scripts/fixtures/`);

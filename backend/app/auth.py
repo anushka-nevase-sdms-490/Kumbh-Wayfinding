@@ -84,6 +84,13 @@ def require_volunteer(
     return vol
 
 
+def require_operator(vol: Volunteer = Depends(require_volunteer)) -> Volunteer:
+    """Operators handle SOS alerts and lost-person cases; admins can too."""
+    if vol.role not in ("operator", "admin"):
+        raise HTTPException(403, "Only an operator or admin can do this")
+    return vol
+
+
 def require_admin(vol: Volunteer = Depends(require_volunteer)) -> Volunteer:
     if vol.role != "admin":
         raise HTTPException(403, "Only an admin can do this")

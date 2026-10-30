@@ -247,6 +247,7 @@ def register_location(
                 takeover.verification_note = SIMULATED_NOTE  # not promoted: nobody was there
         elif takeover.verification != OFFICIALLY_VERIFIED:
             takeover.verification = VOLUNTEER_VERIFIED  # stood there with GPS (accuracy required)
+            takeover.verified_at = datetime.utcnow()
         db.flush()
         if target is not None:
             _link_volunteer_board(db, takeover, target, body.path_heading_deg, vol.id)
@@ -290,6 +291,7 @@ def register_location(
         # simulation, without proof.
         verification=VOLUNTEER_VERIFIED if body.gps_accuracy_m is not None and not body.simulated else UNVERIFIED,
         verification_note=SIMULATED_NOTE if body.simulated else None,
+        verified_at=datetime.utcnow() if body.gps_accuracy_m is not None and not body.simulated else None,
     )
     db.add(node)
     try:

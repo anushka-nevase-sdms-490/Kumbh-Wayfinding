@@ -6,6 +6,7 @@ import { OfflineMap } from "./OfflineMap";
 import { AdminChecks } from "./AdminChecks";
 import { AdminAudit } from "./AdminAudit";
 import { AdminReleases } from "./AdminReleases";
+import { AdminPlaceTools } from "./AdminPlaceTools";
 import "./Volunteer.css";
 
 type AdminPlace = {
@@ -17,6 +18,13 @@ type AdminPlace = {
   confirmed: boolean;
   verification: Verification;
   verification_note: string | null;
+  op_status: string | null;
+  op_status_until: string | null;
+  op_status_note: string | null;
+  step_free: boolean | null;
+  access: string | null;
+  access_note: string | null;
+  board_code: string | null;
 };
 type AdminLane = {
   id: number;
@@ -366,6 +374,15 @@ export function AdminMap({ apiBase, onBack, onSaved }: Props) {
             {place.verification_note ? ` · note: ${place.verification_note}` : ""}
           </small>
           {trustControls("place", place.verification, { code: place.code })}
+          <AdminPlaceTools
+            key={place.code}
+            apiBase={apiBase}
+            place={place}
+            onChanged={() => {
+              onSaved();
+              void load();
+            }}
+          />
           <AdminAudit apiBase={apiBase} target={`place:${place.code}`} refreshKey={data} />
           <div className="report-actions">
             <button type="button" className="btn soft" onClick={() => setPlaceCode(null)}>

@@ -38,6 +38,10 @@ _warned = {"no_water": False}
 # Lane fields that take effect at once even when publishing is manual: closing
 # or reopening a lane must never wait for an admin to publish.
 CLOSURE_FIELDS = ("walkable", "blocked", "door_state")
+# Place fields that are live in the same way: a facility closing must not wait,
+# and neither must retiring a board on the wrong place (phones would keep
+# telling visitors the wrong location until the next publish).
+PLACE_LIVE_FIELDS = ("op_status", "op_status_until", "op_status_note", "op_status_at", "board_code")
 
 
 def _public_path(raw: str | None) -> str | None:
@@ -60,6 +64,9 @@ def _public_path(raw: str | None) -> str | None:
 def _public_node(d: dict) -> dict:
     for k in ("created_at", "updated_at"):
         d.pop(k, None)
+    # The day a person checked it, not the time (that would show when a volunteer was there).
+    if d.get("verified_at"):
+        d["verified_at"] = d["verified_at"][:10]
     return d
 
 
@@ -86,12 +93,16 @@ def _on_release(db: Session, release: DatasetRelease) -> Tuple[List[dict], List[
     """The published data, with today's closures, reopenings and rejections applied."""
     content = json.loads(release.content_json)
     rejected = {c for (c,) in db.query(QrNode.code).filter(QrNode.verification == REJECTED)}
+    live = {
+        row[0]: {f: (v.isoformat() if isinstance(v, datetime) else v) for f, v in zip(PLACE_LIVE_FIELDS, row[1:])}
+        for row in db.query(QrNode.code, *(getattr(QrNode, f) for f in PLACE_LIVE_FIELDS))
+    }
     all_rows = db.query(Edge).all()
     rows = {e.id: e for e in all_rows}
     # A lane deleted and created again (a street re-import) has a new id:
     # find it by its two ends, so its closure still reaches phones.
     by_ends = {frozenset((e.from_code, e.to_code)): e for e in all_rows}
-    nodes = [n for n in content["nodes"] if n["code"] not in rejected]
+    nodes = [{**n, **live.get(n["code"], {})} for n in content["nodes"] if n["code"] not in rejected]
     edges = []
     for e in content["edges"]:
         ends = frozenset((e["from_code"], e["to_code"]))
@@ -277,6 +288,10 @@ def expire_blocks(db: Session) -> bool:
     )
     if changed or old:
         db.commit()
+    # SOS alerts and closed lost-person cases past their retention time.
+    from .retention import purge_expired
+
+    purge_expired(db)
     return reopened
 
 
