@@ -258,6 +258,11 @@ export const en = {
   "ask.showWay": "Show the way",
   "ask.disclaimer": "Setu answers only from its saved data and never makes up places or opening times.",
 
+  "ask.alwaysEmergency": "Emergency?",
+  "ask.sendSos": "Send SOS",
+  "ask.emergencyTitle": "This sounds like an emergency.",
+  "ask.emergencyCall": "Call 112 now (ambulance: 108). Setu cannot call for you — an SOS reaches Setu volunteers, not the police or an ambulance.",
+  "ask.emergencyNearest": "Nearest help:",
   "unit.m": "{n} m",
   "unit.km": "{n} km",
 

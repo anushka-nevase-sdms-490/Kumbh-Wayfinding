@@ -49,7 +49,30 @@ const TOPIC_WORDS: Record<Topic, string[]> = {
 };
 
 const OPEN_WORDS = ["open", "closed", "working", "खुला", "खुली", "बंद", "उघड", "चालू"];
-const SAFETY_WORDS = ["safety", "safe", "tips", "rules", "advice", "crowd", "stampede", "सुरक्षा", "सूचना", "नियम", "सलाह", "सल्ला", "गर्दी", "भीड़"];
+const SAFETY_WORDS = ["safety", "safe", "tips", "rules", "advice", "सुरक्षा", "सूचना", "नियम", "सलाह", "सल्ला"];
+
+/**
+ * Words that mean someone may be in danger now. Checked FIRST: the answer
+ * puts 112 / 108 and "Send SOS" before anything else. Phrases match as text;
+ * single words match a whole word or its start (Hindi/Marathi endings), and
+ * words of 1–2 letters only as a whole word (so आगे "ahead" is not आग "fire").
+ */
+const EMERGENCY_WORDS = [
+  "emergency", "urgent", "help me", "save me", "bleeding", "blood", "unconscious", "fainted", "not breathing",
+  "can't breathe", "cannot breathe", "heart attack", "chest pain", "fire", "drowning", "accident", "injured",
+  "stampede", "crush", "attacked", "snake bite", "fell down", "collapsed", "fits", "seizure",
+  "बचाओ", "मदद करो", "खून", "बेहोश", "सांस नहीं", "साँस नहीं", "दिल का दौरा", "आग", "डूब", "दुर्घटना", "भगदड़", "घायल",
+  "वाचवा", "मदत करा", "रक्त", "बेशुद्ध", "श्वास घेत", "हृदयविकार", "बुडत", "अपघात", "चेंगराचेंगरी", "जखमी",
+];
+
+function hasEmergency(q: string): boolean {
+  const tokens = q.split(/[\s,.;:!?()"'।]+/).filter(Boolean);
+  return EMERGENCY_WORDS.some((w) => {
+    const n = normalizeText(w);
+    if (n.includes(" ")) return q.includes(n);
+    return n.length <= 2 ? tokens.includes(n) : tokens.some((tk) => tk.startsWith(n));
+  });
+}
 
 /** General tips (not official instructions); keys in i18n `ask.tip.*`. Version them with the app. */
 export const SAFETY_TIPS = ["meet", "phone", "children", "barricades", "water", "deep", "help"] as const;
@@ -58,6 +81,8 @@ export const SAFETY_TIPS_VERSION = "2026-10-30";
 export type PlaceHit = { node: QrNode; distanceM: number | null; status: OpStatus; fieldChecked: boolean };
 
 export type Answer =
+  /** Someone may be in danger: 112 / 108 and SOS first, then the nearest help. */
+  | { kind: "emergency"; places: PlaceHit[] }
   | { kind: "nearest"; topic: Topic; places: PlaceHit[]; anyFieldChecked: boolean }
   | { kind: "none"; topic: Topic }
   | { kind: "status"; place: PlaceHit }
@@ -111,6 +136,17 @@ export function ask(question: string, ctx: AskContext): Answer {
   const now = ctx.now ?? new Date();
   const places = ctx.places.filter(isRegisteredLocation);
   if (!q) return { kind: "unknown" };
+
+  if (hasEmergency(q)) {
+    const help = ["medical", "help", "lost_found", "police"];
+    const places = ctx.places
+      .filter((p) => isRegisteredLocation(p) && help.includes(p.node_type))
+      .map((p) => hit(p, ctx.from, now))
+      .filter((h) => h.status.kind !== "closed")
+      .sort((a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0))
+      .slice(0, 3);
+    return { kind: "emergency", places };
+  }
 
   if (has(q, SAFETY_WORDS) && !topicOf(q)) return { kind: "safety" };
 

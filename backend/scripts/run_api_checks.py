@@ -1065,5 +1065,35 @@ with TestClient(app) as anon:
         _cfg.setu_env = "development"
     check(off == 404, "lost-person cases are off on a production server until an authority approves (CASES_ENABLED=1)")
 
+# Operations summary (Phase 7): counts only, operators and admins.
+with TestClient(app) as anon:
+    check(anon.get("/api/ops/summary").status_code == 401 and anon.get("/api/ops/summary", headers=VOL2).status_code == 403,
+          "the operations summary needs an operator or admin")
+    sm = anon.get("/api/ops/summary", headers=OPER).json()
+    flat = json.dumps(sm)
+    check({"sos", "cases", "facilities", "boards", "closed_lanes", "pending_visitor_reports"} <= set(sm)
+          and isinstance(sm["sos"]["unacknowledged"], int) and isinstance(sm["boards"], int)
+          and "fainted" not in flat and "Sunita" not in flat and "lat" not in flat,
+          f"the operations summary has counts only, no personal data ({sm['sos']}, boards {sm['boards']})")
+
+# Sign-in guessing across many phone numbers from one network address is limited.
+with TestClient(app) as anon:
+    from app.db import LoginFailure as _LF, SessionLocal as _S4
+
+    _db = _S4()
+    _db.query(_LF).delete()  # earlier wrong-PIN checks came from the same test address
+    _db.commit()
+    _db.close()
+    codes = [anon.post("/api/auth/login", json={"phone": f"91000{i:05d}", "pin": "000000"}).status_code for i in range(32)]
+    check(codes[:29].count(401) == 29 and codes[-1] == 429,
+          f"after 30 wrong sign-ins from one network address in 15 min → 429 ({codes[-3:]})")
+
+    _db = _S4()
+    _db.query(_LF).delete()
+    _db.commit()
+    _db.close()
+    check(anon.post("/api/auth/login", json={"phone": "9000000004", "pin": "618274"}).status_code == 200,
+          "once the window has passed, sign-in works again")
+
 print("\nALL OK" if ok else "\nSOME FAILED")
 sys.exit(0 if ok else 1)

@@ -1277,3 +1277,31 @@ button {
 .ask-screen .sos-kinds {
   margin: 8px 0;
 }
+
+.ask-emergency-line {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #9a2c06;
+  margin: 4px 0 8px;
+}
+
+.ask-emergency-line a,
+.linklike {
+  color: #b3360a;
+  font: inherit;
+  font-weight: 800;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ask-emergency {
+  border: 2px solid #f3b49a;
+  background: #fff4ef;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}

@@ -259,6 +259,11 @@ export const hi: Messages = {
   "ask.showWay": "रास्ता दिखाएँ",
   "ask.disclaimer": "Setu सिर्फ़ अपनी सेव जानकारी से जवाब देता है और जगहें या खुलने का समय कभी नहीं गढ़ता।",
 
+  "ask.alwaysEmergency": "आपातकाल?",
+  "ask.sendSos": "SOS भेजें",
+  "ask.emergencyTitle": "यह आपातकाल लगता है।",
+  "ask.emergencyCall": "अभी 112 पर कॉल करें (एम्बुलेंस: 108)। Setu आपकी ओर से कॉल नहीं कर सकता — SOS Setu स्वयंसेवकों तक जाता है, पुलिस या एम्बुलेंस तक नहीं।",
+  "ask.emergencyNearest": "सबसे पास मदद:",
   "unit.m": "{n} मी",
   "unit.km": "{n} किमी",
 

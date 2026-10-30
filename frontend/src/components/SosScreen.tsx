@@ -14,6 +14,8 @@ type Props = {
   device: string | null;
   onBack: () => void;
   onRoute: (node: QrNode) => void;
+  /** From "Ask Setu": the visitor's own words, as the alert's note. */
+  initialNote?: string;
 };
 
 const KINDS: SosKind[] = ["medical", "lost", "unsafe", "other"];
@@ -23,10 +25,10 @@ const KINDS: SosKind[] = ["medical", "lost", "unsafe", "other"];
  * shown with its true state (pending / sent / acknowledged). Not a call to the
  * police or an ambulance — 112 and 108 are offered as phone calls.
  */
-export function SosScreen({ apiBase, places, position, start, device, onBack, onRoute }: Props) {
+export function SosScreen({ apiBase, places, position, start, device, onBack, onRoute, initialNote }: Props) {
   const { t, lang, placeLabel, dist } = useI18n();
   const [kind, setKind] = useState<SosKind | null>(null);
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState(initialNote ?? "");
   const [busy, setBusy] = useState(false);
   const [items, setItems] = useState<SosItem[]>([]);
 

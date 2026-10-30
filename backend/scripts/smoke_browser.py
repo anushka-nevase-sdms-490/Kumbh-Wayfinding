@@ -215,6 +215,37 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
     """)
     check(r, "language switch: the start screen changes to Hindi and back")
 
+    # 4b. "Ask Setu" (Phase 7): offline answers from the saved data.
+    servers.stop()
+    chrome.offline(True)
+    chrome.goto(APP + "/", settle_s=3)
+    r = run(chrome, """
+      await click('I am a visitor', 1000);
+      await click('Ask Setu', 1200);
+      await click('Medical help', 800);
+      const ans = document.querySelector('.ask-answer')?.innerText || '';
+      setInput(document.querySelector('.ask-screen input'), 'सबसे पास अस्पताल');
+      document.querySelector('.ask-screen form').requestSubmit(); await sleep(500);
+      const hi = document.querySelector('.ask-answer')?.innerText || '';
+      setInput(document.querySelector('.ask-screen input'), 'what is the weather tomorrow');
+      document.querySelector('.ask-screen form').requestSubmit(); await sleep(500);
+      const unk = document.querySelector('.ask-answer')?.innerText || '';
+      setInput(document.querySelector('.ask-screen input'), 'my father fell and is bleeding');
+      document.querySelector('.ask-screen form').requestSubmit(); await sleep(500);
+      const em = document.querySelector('.ask-emergency')?.innerText || '';
+      const sosBtn = [...document.querySelectorAll('.ask-emergency button')].find((b) => b.textContent.includes('Send SOS'));
+      sosBtn?.click(); await sleep(1200);
+      const note = document.querySelector('.sos-note textarea')?.value || '';
+      return { ans, hi, unk, em, note };
+    """)
+    check(r and "This sounds like an emergency" in r["em"] and "Call 112" in r["em"] and r["note"] == "my father fell and is bleeding",
+          "Ask Setu: 'my father fell and is bleeding' → emergency box (Call 112, Send SOS); Send SOS opens the alert with those words")
+    check(r and "Nearest medical help" in r["ans"] and "Show the way" in r["ans"] and "Nearest" in r["hi"]
+          and "I can only answer from Setu's saved data" in r["unk"],
+          "Ask Setu in airplane mode: nearest medical help from the saved data; Hindi question; honest 'cannot answer'")
+    chrome.offline(False)
+    check(servers.start(), "servers back up")
+
     # 5. QR boards, facility status and search (Phase 5), set up through the API as the test admin.
     def api(path, body=None, token=None):
         req = urllib.request.Request(f"http://127.0.0.1:{API_PORT}{path}", method="POST" if body is not None else "GET",
@@ -333,7 +364,13 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
       [...card.querySelectorAll('button')].find((b) => b.textContent.includes('Open lost-person case')).click();
       await sleep(1500);
       const form = document.querySelector('.case-form');
-      setInput(form.querySelector('textarea'), 'Boy about 8, blue shirt, black shorts');
+      setInput(form.querySelector('.report-helper textarea'), 'my son, 8 years, blue shirt and black shorts, last seen near Kalaram Mandir at 3 pm, speaks Marathi');
+      await click('Suggest fields', 400);
+      const sugg = form.querySelector('.report-helper')?.innerText || '';
+      await click('Use ticked suggestions', 400);
+      const filled = [...form.querySelectorAll('textarea')].find((t) => !t.closest('.report-helper'))?.value || '';
+      window.__helper = {{ sugg, filled }};
+      setInput([...form.querySelectorAll('textarea')].find((t) => !t.closest('.report-helper')), 'Boy about 8, blue shirt, black shorts');
       const age = [...form.querySelectorAll('label')].find((l) => l.textContent.startsWith('Age')).querySelector('input');
       setInput(age, '8');
       await click('Open case', 2000);
@@ -344,12 +381,17 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
       setInput(document.querySelector('.report-card input'), 'family left together');
       await click('Closed', 1500);
       const hist = document.querySelector('.admin-audit')?.innerText || '';
-      return {{ head, after: document.querySelector('.volunteer-head h2')?.textContent || '', hist }};
+      return {{ head, after: document.querySelector('.volunteer-head h2')?.textContent || '', hist, helper: window.__helper }};
     """, timeout_s=60)
     check(r and isinstance(r, dict) and r["head"].startswith("LP-") and "New" in r["head"] and "Closed" in r["after"]
           and "Under review → Reunited" in r["hist"] and "Reunited → Closed" in r["hist"],
           f"lost-person case from a 'lost' SOS: opened (New), reviewed, reunited, closed, all in its history ({r and r.get('head') if isinstance(r, dict) else r})")
+    h = (r or {}).get("helper") if isinstance(r, dict) else None
+    check(h and "Age about 8" in h["sugg"] and "Last seen at Kalaram Mandir" in h["sugg"] and h["filled"] == "Wearing blue shirt, black shorts",
+          "report helper: a pasted report becomes suggested fields; the operator applies them")
     run(chrome, "await back(); await back(); return true;")
+    r = run(chrome, "return [...document.querySelectorAll('.ops-tile')].map((t) => t.innerText.replace(/\\n/g, ' ')).join(' | ');")
+    check(r and "SOS not acknowledged" in r and "Open lost-person cases" in r, f"operations summary tiles on the volunteer home ({(r or '')[:100]})")
 
     # The visitor's phone now shows the operator's confirmation.
     chrome.goto(APP + "/", settle_s=2.5)

@@ -134,3 +134,42 @@ def resolve_sos(alert_id: int, body: SosResolve, db: Session = Depends(get_db), 
         audit(db, vol, "sos.resolve", f"sos:{a.id}", f"SOS #{a.id} ({a.kind}) resolved")
         db.commit()
     return _ops_view(a)
+
+
+@router.get("/api/ops/summary")
+def ops_summary(db: Session = Depends(get_db), vol: Volunteer = Depends(require_operator)):
+    """Today's operations at a glance (operators and admins): counts only, no personal data."""
+    from statistics import median
+
+    from ..config import cases_on, settings
+    from ..db import BlockReport, Edge, LostCase, QrNode
+
+    purge_expired(db)
+    now = datetime.utcnow()
+    open_q = db.query(SosAlert).filter(SosAlert.status.in_(("received", "acknowledged")))
+    acks = [
+        (a.ack_at - a.created_at).total_seconds() / 60
+        for a in db.query(SosAlert).filter(SosAlert.ack_at.isnot(None), SosAlert.created_at > now - timedelta(hours=24))
+    ]
+    cases = None
+    if cases_on(settings):
+        cases = {s: 0 for s in ("NEW", "UNDER_REVIEW", "POSSIBLE_MATCH", "ESCALATED", "REUNITED")}
+        for (s,) in db.query(LostCase.status).filter(LostCase.status != "CLOSED"):
+            cases[s] = cases.get(s, 0) + 1
+    places = db.query(QrNode).filter(QrNode.op_status.isnot(None)).all()
+    return {
+        "sos": {
+            "unacknowledged": open_q.filter(SosAlert.status == "received").count(),
+            "acknowledged_open": open_q.filter(SosAlert.status == "acknowledged").count(),
+            "possible_flood_open": open_q.filter(SosAlert.flood_suspect.is_(True)).count(),
+            "median_minutes_to_ack_24h": round(median(acks), 1) if acks else None,
+        },
+        "cases": cases,
+        "facilities": {
+            "closed_now": sum(1 for p in places if p.op_status == "closed" and p.op_status_until and p.op_status_until > now),
+            "status_expired": sum(1 for p in places if p.op_status_until and p.op_status_until <= now),
+        },
+        "boards": db.query(QrNode).filter(QrNode.board_code.isnot(None)).count(),
+        "closed_lanes": db.query(Edge).filter((Edge.blocked.is_(True)) | (Edge.door_state == "closed")).count(),
+        "pending_visitor_reports": db.query(BlockReport).filter(BlockReport.status == "pending").count(),
+    }

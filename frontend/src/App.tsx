@@ -46,6 +46,8 @@ import { SosScreen } from "./components/SosScreen";
 import { AssistantScreen } from "./components/AssistantScreen";
 import { OpsSos } from "./components/OpsSos";
 import { OpsCases, type CasePrefill } from "./components/OpsCases";
+import { ReportHelper } from "./components/ReportHelper";
+import { OpsSummary } from "./components/OpsSummary";
 import { flushSos, httpTransport, idbSos } from "./lib/sos";
 import { opStatus, resolveBoard, searchPlaces } from "./lib/placeInfo";
 import { LangPicker } from "./components/LangPicker";
@@ -168,6 +170,8 @@ export default function App() {
   const [pack, setPack] = useState<OfflinePack>(FALLBACK_PACK);
   const [step, setStep] = useState<UserStep>("home");
   const [volStep, setVolStep] = useState<VolStep>("home");
+  /** "Send SOS" from Ask Setu: the question becomes the alert's note. */
+  const [sosNote, setSosNote] = useState("");
   /** A "someone is lost" SOS alert an operator is turning into a case. */
   const [casePrefill, setCasePrefill] = useState<CasePrefill | null>(null);
   const [start, setStart] = useState<QrNode | null>(null);
@@ -939,6 +943,9 @@ export default function App() {
               </p>
             )}
             <VolunteerOutbox apiBase={API} volunteerId={auth?.volunteer.id ?? null} />
+            {(auth?.volunteer.role === "operator" || auth?.volunteer.role === "admin") && (
+              <OpsSummary apiBase={API} isAdmin={auth.volunteer.role === "admin"} onOpen={(where) => setVolStep(where)} />
+            )}
             <div className="action-list">
               <button
                 type="button"
@@ -1075,6 +1082,7 @@ export default function App() {
               setCasePrefill(null);
               setVolStep("home");
             }}
+            renderReportHelper={(apply) => <ReportHelper places={registeredPlaces} apply={apply} />}
           />
         )}
 
@@ -1237,6 +1245,10 @@ export default function App() {
 
       {step === "ask" && (
         <AssistantScreen
+          onSos={(note) => {
+            setSosNote(note.slice(0, 280));
+            setStep("sos");
+          }}
           places={registeredPlaces}
           from={
             live.pos && live.pos.usable
@@ -1261,11 +1273,15 @@ export default function App() {
           position={live.pos && live.pos.usable ? { lat: live.pos.lat, lon: live.pos.lon, accuracyM: live.pos.accuracyM } : null}
           start={start}
           device={deviceId()}
-          onBack={() => setStep("home")}
+          onBack={() => {
+            setSosNote("");
+            setStep("home");
+          }}
           onRoute={(node) => {
             setDest(node);
             setStep(start && start.code !== node.code ? "guide" : "start");
           }}
+          initialNote={sosNote}
         />
       )}
 

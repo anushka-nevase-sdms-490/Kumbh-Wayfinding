@@ -11,11 +11,12 @@ import re
 import secrets
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
 
-from .db import AuthSession, Volunteer, get_db
+from .config import settings
+from .db import AuthSession, LoginFailure, Volunteer, get_db
 from .schemas import LoginRequest, LoginResponse, VolunteerOut
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -97,13 +98,36 @@ def require_admin(vol: Volunteer = Depends(require_volunteer)) -> Volunteer:
     return vol
 
 
+# Failed sign-ins per network address in IP_WINDOW before refusing (many
+# volunteers may share a carrier address, so this is well above normal use).
+MAX_FAILED_PER_IP = 30
+IP_WINDOW = timedelta(minutes=15)
+
+
+def _ip_hash(request: Request) -> str:
+    ip = request.client.host if request.client else "unknown"
+    return hashlib.sha256(f"login|{ip}|{settings.secret_key}".encode()).hexdigest()
+
+
+def _failed(db: Session, ip_hash: str) -> None:
+    db.add(LoginFailure(ip_hash=ip_hash))
+    db.commit()
+
+
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     phone = normalize_phone(body.phone)
-    vol = db.query(Volunteer).filter(Volunteer.phone == phone).first()
     now = datetime.utcnow()
+    ip_hash = _ip_hash(request)
+    db.query(LoginFailure).filter(LoginFailure.at < now - timedelta(days=1)).delete()
+    db.commit()
+    recent = db.query(LoginFailure).filter(LoginFailure.ip_hash == ip_hash, LoginFailure.at > now - IP_WINDOW).count()
+    if recent >= MAX_FAILED_PER_IP:
+        raise HTTPException(429, "Too many wrong sign-ins from this network — wait 15 minutes and try again")
+    vol = db.query(Volunteer).filter(Volunteer.phone == phone).first()
     if vol is None or not vol.active:
         verify_pin(body.pin, _DUMMY_HASH)  # same time as a real check
+        _failed(db, ip_hash)
         raise HTTPException(401, "Wrong phone number or PIN")
 
     # Take an attempt slot *before* the slow PIN check, in one atomic UPDATE:
@@ -126,11 +150,13 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
             _lock(db, vol.id, now)
             db.refresh(vol)
         minutes = max(1, round((vol.locked_until - now).total_seconds() / 60))
+        _failed(db, ip_hash)
         raise HTTPException(423, f"Too many wrong PINs — try again in {minutes} min")
 
     if not verify_pin(body.pin, vol.pin_hash):
         if slot >= MAX_FAILED_LOGINS:
             _lock(db, vol.id, now)
+        _failed(db, ip_hash)
         raise HTTPException(401, "Wrong phone number or PIN")
 
     db.execute(

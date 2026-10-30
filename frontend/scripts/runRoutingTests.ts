@@ -46,6 +46,7 @@ import { checkStored, isQuotaError, packChecksum } from "../src/lib/packStore";
 import { normalizeBoardCode, opStatus, resolveBoard, searchPlaces, trustOf } from "../src/lib/placeInfo";
 import { createSos, flushSos, type SosItem, type SosStore, type SosTransport } from "../src/lib/sos";
 import { ask } from "../src/lib/assistant";
+import { parseReport } from "../src/lib/reportParser";
 import { dismissOutboxItem, flushOutbox, sendOrQueue, type OutboxItem, type OutboxStore, type Sender } from "../src/lib/outbox";
 import { BUNDLED_SIGNATURE, FALLBACK_PACK } from "../src/lib/fallbackPack";
 import { officialPlaceFor } from "../src/lib/officialPlaces";
@@ -788,8 +789,52 @@ function pack(edges: GraphEdge[], nodes: QrNode[] = [START, MID, DEST, CORNER]):
   assert(ask("safety tips for the crowd", { places, from: at, now }).kind === "safety", "T33 safety tips come from the fixed list");
   const noPos = ask("drinking water", { places, from: null, now });
   assert(noPos.kind === "nearest" && noPos.places[0].distanceM === null, "T33 without a position no distance is claimed");
+  const emergencies = ["My father fell down and is bleeding", "पिताजी बेहोश हो गए", "आग लगी है", "मुलगा बुडतोय", "माझे वडील बेशुद्ध झाले"];
+  const kinds = emergencies.map((q) => ask(q, { places, from: at, now }).kind);
+  assert(kinds.every((k) => k === "emergency"), `T33 emergencies in English, Hindi and Marathi come FIRST as 'emergency' (${kinds})`);
+  assert(ask("stampede near the ghat", { places, from: at, now }).kind === "emergency"
+    && ask("भगदड़ हो रही है", { places, from: at, now }).kind === "emergency",
+    "T33 'stampede' / 'भगदड़' is an emergency, not safety tips");
+  assert(ask("someone is injured", { places, from: at, now }).kind === "emergency", "T33 'injured' alone → emergency");
+  assert(ask("आगे घाट कहाँ है", { places, from: at, now }).kind !== "emergency", "T33 'आगे' (ahead) is not 'आग' (fire)");
+  const em = ask("heart attack", { places, from: at, now });
+  assert(em.kind === "emergency" && em.places.length > 0 && em.places.every((h) => h.status.kind !== "closed" && h.node.node_type === "medical"),
+    "T33 an emergency also lists the nearest help (never a place reported closed)");
   const lost = ask("my child is lost", { places, from: at, now });
   assert(lost.kind === "none" && lost.topic === "lost", "T33 'lost' looks for Lost & Found / help desks / police, not other places");
+}
+
+// ── T34: report helper — suggestions only from words that are there ──
+{
+  const places = [
+    { id: 1, code: "OSM-N1", name: "Ramkund Ghat", local_name: "रामकुंड", lat: 20, lon: 73.79, node_type: "ghat" },
+    { id: 2, code: "OSM-N2", name: "Kalaram Mandir", local_name: "काळाराम मंदिर", lat: 20, lon: 73.79, node_type: "temple" },
+  ];
+  const get = (r: ReturnType<typeof parseReport>, f: string) => r.suggestions.find((s) => s.field === f)?.value;
+  const en = parseReport("My son, name is Ravi, 8 years old, blue shirt and black shorts, last seen near Ramkund Ghat at 3 pm. He speaks Marathi. Call 98765 43210.", places);
+  assert(get(en, "approx_age") === "8" && get(en, "gender") === "male" && get(en, "person_name") === "Ravi"
+    && get(en, "description") === "Wearing blue shirt, black shorts" && get(en, "last_seen_place_code") === "OSM-N1"
+    && get(en, "last_seen_note") === "Last seen around 3 pm" && get(en, "languages") === "Marathi"
+    && get(en, "reporter_contact") === "9876543210" && en.questions.length === 0,
+    "T34 English report: age, gender (from 'son'), name, clothing, place, time, language, phone — nothing left to ask");
+  const mr = parseReport("माझी आई हरवली आहे, 70 वर्षांची, हिरवी साडी, काळाराम मंदिर जवळ दुपारी 2 वाजता दिसली", places);
+  assert(get(mr, "approx_age") === "70" && get(mr, "gender") === "female" && get(mr, "description") === "Wearing green saree"
+    && get(mr, "last_seen_place_code") === "OSM-N2" && get(mr, "last_seen_note")?.startsWith("Last seen around 2"),
+    "T34 Marathi report: age, gender (from 'आई'), clothing, place, time");
+  const hi = parseReport("मेरा बेटा 10 साल का, लाल टोपी, रामकुंड के पास", places);
+  assert(get(hi, "approx_age") === "10" && get(hi, "gender") === "male" && get(hi, "description") === "Wearing red cap"
+    && get(hi, "last_seen_place_code") === "OSM-N1", "T34 Hindi report");
+  const vague = parseReport("A person is missing, please help", places);
+  assert(!get(vague, "gender") && !get(vague, "approx_age") && !get(vague, "last_seen_place_code")
+    && vague.questions.includes("What is the person wearing (colours, clothes)?") && vague.questions.length === 6,
+    "T34 a vague report: nothing invented (no gender, age or place) and every follow-up question is listed");
+  const both = parseReport("mother and son went missing", places);
+  assert(!get(both, "gender"), "T34 words for both genders → no gender suggested (left to the operator)");
+  assert(!get(parseReport("last seen at Panchavati Circle", places), "last_seen_place_code"),
+    "T34 a place not in the saved data is not 'found'");
+  assert(parseReport("", places).suggestions.length === 0, "T34 empty text → no suggestions");
+  assert(!parseReport("seen at 3 pm yesterday", places).suggestions.some((s) => /\d{4}-\d{2}/.test(s.value)),
+    "T34 a time is kept as words, never turned into a date");
 }
 
 // ── T26: Nashik simulation mode — the simulated walker and the real navigation logic ──

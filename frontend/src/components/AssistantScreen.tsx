@@ -5,6 +5,8 @@ import type { QrNode } from "../lib/types";
 import { PlaceBadges } from "./PlaceBadges";
 
 type Props = {
+  /** "Send SOS" with the question as the note. */
+  onSos: (note: string) => void;
   places: QrNode[];
   from: { lat: number; lon: number } | null;
   /** "30 Oct, 14:05" — when the saved data was made (freshness). */
@@ -23,7 +25,7 @@ const QUICK = [
 ] as const;
 
 /** "Ask Setu": offline answers from the saved data only (lib/assistant.ts). */
-export function AssistantScreen({ places, from, dataTime, onBack, onRoute }: Props) {
+export function AssistantScreen({ onSos, places, from, dataTime, onBack, onRoute }: Props) {
   const { t, placeLabel, dist } = useI18n();
   const [q, setQ] = useState("");
   const [answer, setAnswer] = useState<Answer | null>(null);
@@ -55,6 +57,14 @@ export function AssistantScreen({ places, from, dataTime, onBack, onRoute }: Pro
         </div>
       </div>
 
+      <p className="ask-emergency-line" role="note">
+        {t("ask.alwaysEmergency")} ·{" "}
+        <a href="tel:112">{t("sos.call112")}</a> ·{" "}
+        <button type="button" className="linklike" onClick={() => onSos(q)}>
+          {t("ask.sendSos")}
+        </button>
+      </p>
+
       <form
         className="board-row"
         onSubmit={(e) => {
@@ -85,6 +95,31 @@ export function AssistantScreen({ places, from, dataTime, onBack, onRoute }: Pro
 
       {answer && (
         <div className="ask-answer" role="status" aria-live="polite">
+          {answer.kind === "emergency" && (
+            <div className="ask-emergency" role="alert">
+              <p>
+                <strong>{t("ask.emergencyTitle")}</strong>
+              </p>
+              <p>{t("ask.emergencyCall")}</p>
+              <div className="sos-calls">
+                <a className="btn danger-solid" href="tel:112">
+                  {t("sos.call112")}
+                </a>
+                <a className="btn soft" href="tel:108">
+                  {t("sos.call108")}
+                </a>
+                <button type="button" className="btn danger-solid" onClick={() => onSos(q)}>
+                  {t("ask.sendSos")}
+                </button>
+              </div>
+              {answer.places.length > 0 && (
+                <>
+                  <p>{t("ask.emergencyNearest")}</p>
+                  <div className="place-list">{answer.places.map(placeRow)}</div>
+                </>
+              )}
+            </div>
+          )}
           {answer.kind === "nearest" && (
             <>
               <p>

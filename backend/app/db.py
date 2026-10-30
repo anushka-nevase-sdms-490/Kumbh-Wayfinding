@@ -182,6 +182,16 @@ class PackVersion(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class LoginFailure(Base):
+    """A failed sign-in from a (hashed) network address — limits guessing across many phone numbers."""
+
+    __tablename__ = "login_failures"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ip_hash = Column(String(64), nullable=False, index=True)
+    at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 class SosAlert(Base):
     """
     A visitor's "I need help" (Phase 6). Public to send, operator-only to read.
