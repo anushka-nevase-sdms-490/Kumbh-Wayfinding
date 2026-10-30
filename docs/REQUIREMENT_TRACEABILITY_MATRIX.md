@@ -15,6 +15,32 @@ audit, 2026-10-30).
 "Tested" means automated tests and/or Chrome tests on the development machine.
 **Nothing is tested on real devices or on site.**
 
+## Update after Phases 5–8 (2026-10-30) — supersedes the rows below
+
+The sections A–E further down are the **Phase 4 audit as it was**; this table gives the current status of every requirement that changed.
+
+| Requirement | Now | Code | Tests | Still open |
+|---|---|---|---|---|
+| Free-text search for places | DONE+TESTED | `lib/placeInfo.ts` `searchPlaces`; destination screen | T31; smoke "kala" | — |
+| QR-based location re-identification | DONE+TESTED (link + typed code; no in-app camera) | `routers/admin.py` boards; `BoardCodeEntry.tsx`, `AdminPlaceTools.tsx`; `?at=` | T31; API board checks; smoke (also offline) | EXTERNAL: board installation permission; device test with printed boards |
+| Show source, verification, freshness per place | DONE+TESTED | `PlaceBadges.tsx`; `verified_at` (date only), `source` | T31; API pack checks | — |
+| Operational status with expiry | DONE+TESTED | `/api/admin/place-status` (operators); `op_status*`, live across releases | T31, T33; API checks; smoke closed warning | Operators must keep it current |
+| Source and verifier; validity dates | DONE+TESTED | `qr_nodes.source`, `verified_at`, `op_status_until` | API checks | — |
+| Accessibility and access restrictions (places) | DONE+TESTED (data fields) | `step_free`, `access`, `access_note`; `/api/admin/place-access` | API checks | Field data; a full accessibility review of the app (EXTERNAL) |
+| QR marker IDs | DONE+TESTED | `board_code` unique, never reused, retire is live | API checks | — |
+| **C. Lost-person cases**: id, fields, workflow, operator access, search, escalation, outcome, audit | DONE+TESTED, **off in production** | `routers/cases.py`; `LostCase`, `LostCaseEvent`; `OpsCases.tsx`; `operator` role | API checks (workflow, 409, masking, audit, retention); smoke lifecycle | EXTERNAL: authority approval and legal basis before `CASES_ENABLED=1` |
+| **D. SOS**: offline queue, pending shown, retry, sent only after acceptance, acknowledged only after operator confirmation, never claim delivery | DONE+TESTED (server + operator console) | `lib/sos.ts`, `SosScreen.tsx`, `OpsSos.tsx`, `routers/sos.py` | T32; API checks; smoke no network → acknowledged | EXTERNAL: SMS/radio channels; console staffing |
+| **E. Multilingual information assistant** | DONE+TESTED (rule-based, offline; no external AI) | `lib/assistant.ts`, `AssistantScreen.tsx` | T33 (16, incl. emergencies first); smoke airplane mode | OWNER: an external AI model only after a privacy review |
+| Report structuring | DONE+TESTED (rule-based, text; operator confirms) | `lib/reportParser.ts`, `ReportHelper.tsx` | T34; smoke | Speech input not built |
+| Translation and speech | PARTIAL | Static UI in en/hi/mr | Key parity | Speech; native review (EXTERNAL) |
+| Admin and operations monitoring | DONE+TESTED | `/api/ops/summary`, `OpsSummary.tsx` | API check (counts only); smoke | — |
+| Stale data warning | DONE+TESTED | `dataStaleness` (12 h) on home and guide | T35; smoke | — |
+| Rate limiting on sign-in by network address | DONE+TESTED | `login_failures`, 30 / 15 min | API checks | Watch shared carrier addresses in the pilot |
+| CSP tightened | DONE+TESTED | `deploy/Caddyfile` | Smoke runs under the production CSP | — |
+| Privacy / DPDP | PARTIAL (checklist) | `PRIVACY_DPDP_CHECKLIST.md` | — | OWNER / EXTERNAL: notice, lawyer, fiduciary |
+| End-to-end test plan | DONE (plan), PARTIAL (run) | `E2E_TEST_PLAN.md` | 20/20 automated where applicable | 0/20 device, 0/20 field |
+| Launch readiness | DONE (report) | `LAUNCH_READINESS.md` | — | OWNER / EXTERNAL items listed there |
+
 ## A. Offline pilgrim navigation
 
 | Requirement | Status | Code | Endpoints / tables | UI | Tests | Missing | Risk | Next action |
@@ -93,5 +119,5 @@ audit, 2026-10-30).
 | Simulation never in production | DONE+TESTED | Build check; the server refuses simulated data in production |
 | Deployment | OWNER | Server and domain not provided; `deploy/` ready |
 | Real-device and field testing | EXTERNAL / OWNER | Not done |
-| Privacy notice / DPDP | OWNER / EXTERNAL | Not done |
+| Privacy notice / DPDP | OWNER / EXTERNAL | Checklist ready (`PRIVACY_DPDP_CHECKLIST.md`); notice and legal review not done |
 | Professional security test | EXTERNAL | Not done |

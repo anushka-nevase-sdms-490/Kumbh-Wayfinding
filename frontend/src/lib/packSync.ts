@@ -60,3 +60,47 @@ export async function fetchNewerPack(apiBase: string, current: OfflinePack): Pro
     return { kind: "unreachable" };
   }
 }
+
+/**
+ * Hours without confirming that the saved data is current before the phone
+ * warns: closures and facility changes during the Mela happen daily.
+ */
+export const STALE_AFTER_H = 12;
+
+/**
+ * Is the saved data possibly out of date? `since` is the last time the server
+ * confirmed it (a check that answered "same" or brought a newer copy), or else
+ * when the data was made. With no time at all it cannot be vouched for.
+ */
+export function dataStaleness(
+  lastConfirmed: string | null,
+  generatedAt: string | null | undefined,
+  now: Date = new Date()
+): { stale: boolean; since: string | null } {
+  const since = [lastConfirmed, generatedAt].find((iso) => iso && !Number.isNaN(new Date(iso).getTime())) ?? null;
+  if (!since) return { stale: true, since: null };
+  return { stale: now.getTime() - new Date(since).getTime() > STALE_AFTER_H * 3600_000, since };
+}
+
+/**
+ * While someone is being guided, check for new data (closures, rejected
+ * lanes) at least this often: a lane closed on their route must reach them
+ * mid-walk. Each check is a small version request, cached on the server.
+ */
+export const GUIDE_RECHECK_MS = 3 * 60 * 1000;
+
+/** Should the phone check for new data now? Only while guiding and online. */
+export function shouldRecheck(step: string, lastCheckMs: number, nowMs: number, online: boolean): boolean {
+  return step === "guide" && online && nowMs - lastCheckMs >= GUIDE_RECHECK_MS;
+}
+
+export type RouteSnapshot = { version: string; key: string };
+
+/**
+ * Did new data change the route being followed? Only when there was a route
+ * before (key "" = none), the data version changed and the route changed — a
+ * newly chosen destination is not "the route was updated".
+ */
+export function routeChangedByData(prev: RouteSnapshot | null, cur: RouteSnapshot): boolean {
+  return !!prev && prev.key !== "" && prev.version !== cur.version && prev.key !== cur.key;
+}

@@ -1,7 +1,11 @@
 # Roadmap: 8 phases
 
-The whole project is organised in **8 phases: 4 completed and 4 remaining**
-(status 30 October 2026; summary in `Setu_Development_Phases.pdf`). The
+The whole project is organised in **8 phases. All software work for the 8
+phases is done** (status 30 October 2026, after the owner approved completing
+the remaining phases). **What remains is outside software:** the field pilot,
+real-device tests, approvals, a lawyer, a server — see
+[LAUNCH_READINESS.md](LAUNCH_READINESS.md). One-page summary:
+`Setu_Development_Phases.pdf` (updated 31 October 2026). The
 remaining order is based on the audit (`PROJECT_IMPLEMENTATION_AUDIT.md`,
 `REQUIREMENT_TRACEABILITY_MATRIX.md`).
 
@@ -20,10 +24,10 @@ not promises.
 | **2** | Safe and reliable routes | Done | Missing-route fix; Nashik simulation; Godavari river safeguards; trust levels; offline reliability | First master prompt: A, B, D, C, E |
 | **3** | Volunteer and admin tools | Done | Volunteer accounts and visitor reports; admin map; volunteer offline queue; volunteer screens in hi/mr; admin data checks, audit log, publish and rollback | Original roadmap 5.1–5.3; first master prompt: F1, F2, F3 |
 | **4** | Security, documents and audit | Done | Security and privacy review; QA, deployment-readiness and known-limitations documents; backup restore tested; production setup files; full audit against the new goals | Original roadmap 5.4 (setup files); first master prompt: G, H; new master prompt: Phase 0 |
-| **5** | Stabilize and locate | Remaining | 5a commit, 5b stabilization, 5c QR location boards, 5d facility status, dates, accessibility and search | Earlier remaining list 0–3 |
-| **6** | Pilgrim safety | Remaining | 6a SOS alerts, 6b lost-person cases | Earlier remaining list 4–5 |
-| **7** | Assistant and admin | Remaining | 7a assistant (deterministic first, AI optional), 7b AI help for reports, 7c admin and operations | Earlier remaining list 6–8 |
-| **8** | Final checks and field pilot | Remaining | 8a security and privacy review of the new features, 8b end-to-end testing, 8c field pilot and launch readiness (including deployment) | Earlier remaining list 9–11; original roadmap 4.1–4.2 and the deployment part of 5.4 |
+| **5** | Stabilize and locate | **Done** (commit `293156a`) | 5a commit, 5b stabilization, 5c QR location boards, 5d facility status, dates, accessibility and search | Earlier remaining list 0–3 |
+| **6** | Pilgrim safety | **Done** (commit `293156a`; cases off until approved) | 6a SOS alerts, 6b lost-person cases | Earlier remaining list 4–5 |
+| **7** | Assistant and admin | **Done** (commit `d266ded`; no external AI) | 7a offline assistant with emergencies first, 7b rule-based report helper, 7c operations summary | Earlier remaining list 6–8 |
+| **8** | Final checks and field pilot | **Software done**; pilot and launch need the owner | 8a security and privacy review of the new features, 8b end-to-end testing, 8c field pilot and launch readiness (including deployment) | Earlier remaining list 9–11; original roadmap 4.1–4.2 and the deployment part of 5.4 |
 
 ## Principles for the order
 
@@ -37,7 +41,20 @@ not promises.
    - the stable place codes (and, if an in-app scanner is chosen, the old QR code in git) for QR boards;
    - the published pack for search and the assistant.
 
-## Remaining phases in detail
+## How the open decisions were settled (owner approval of 2026-10-30)
+
+The owner approved completing all remaining phases, including steps that needed approval. The audit's recommended defaults were used and documented:
+
+| Decision | Chosen | Document |
+|---|---|---|
+| QR boards | Link + typed code, **no in-app camera** | `QR_BOARDS_AND_FACILITY_STATUS.md` |
+| Facility status source | Operators/admins, with an expiry | same |
+| SOS channel | Setu server and operator console only; **never presented as 112** | `SOS_AND_LOST_PERSONS.md` |
+| Lost-person cases | Minimal fields; **off in production** until the authority approves | same |
+| AI | **No external AI service**; rule-based and offline | `ASSISTANT_AND_OPERATIONS.md` |
+| Commit | Allowed on the branch; **no push, merge, pull request or deployment** | — |
+
+## Phases 5–8 as planned (now built)
 
 ### Phase 5: Stabilize and locate
 
@@ -80,12 +97,4 @@ not promises.
 
 ## Recommendation for the next step
 
-1. **Approve 5a (commit the current work)** (decision 1 in the audit).
-2. **Approve 5b (stabilization):** small and low-risk; it sets the baseline for the new features.
-3. **Meanwhile, answer decisions 2–7 in the audit**, so the rest of phases 5–7 can be planned precisely:
-   - the concept document;
-   - whether to bring QR back (it reverses your earlier no-camera decision), and how;
-   - the facility status source;
-   - SOS channels and receivers;
-   - lost-person data rules;
-   - the AI policy.
+Follow "Owner actions, in order" in [LAUNCH_READINESS.md](LAUNCH_READINESS.md): review and push the branch; native-speaker read; volunteer accounts and consent; decide the crossings; run the field pilot with the device and field rows of [E2E_TEST_PLAN.md](E2E_TEST_PLAN.md).

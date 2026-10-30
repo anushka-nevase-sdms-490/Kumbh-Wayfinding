@@ -47,6 +47,7 @@ import { normalizeBoardCode, opStatus, resolveBoard, searchPlaces, trustOf } fro
 import { createSos, flushSos, type SosItem, type SosStore, type SosTransport } from "../src/lib/sos";
 import { ask } from "../src/lib/assistant";
 import { parseReport } from "../src/lib/reportParser";
+import { dataStaleness, GUIDE_RECHECK_MS, routeChangedByData, shouldRecheck } from "../src/lib/packSync";
 import { dismissOutboxItem, flushOutbox, sendOrQueue, type OutboxItem, type OutboxStore, type Sender } from "../src/lib/outbox";
 import { BUNDLED_SIGNATURE, FALLBACK_PACK } from "../src/lib/fallbackPack";
 import { officialPlaceFor } from "../src/lib/officialPlaces";
@@ -835,6 +836,32 @@ function pack(edges: GraphEdge[], nodes: QrNode[] = [START, MID, DEST, CORNER]):
   assert(parseReport("", places).suggestions.length === 0, "T34 empty text → no suggestions");
   assert(!parseReport("seen at 3 pm yesterday", places).suggestions.some((s) => /\d{4}-\d{2}/.test(s.value)),
     "T34 a time is kept as words, never turned into a date");
+}
+
+// ── T35: stale saved data — the phone warns once it hasn't confirmed the data for 12 h ──
+{
+  const now = new Date("2026-10-30T20:00:00Z");
+  assert(!dataStaleness("2026-10-30T10:00:00Z", "2026-10-20T00:00:00Z", now).stale,
+    "T35 confirmed 10 h ago (even if the data was made earlier) → not stale");
+  const old = dataStaleness("2026-10-29T10:00:00Z", "2026-10-29T09:00:00Z", now);
+  assert(old.stale && old.since === "2026-10-29T10:00:00Z", "T35 last confirmed 34 h ago → stale, from that time");
+  assert(dataStaleness(null, "2026-10-30T15:00:00Z", now).stale === false && dataStaleness(null, "2026-10-29T15:00:00Z", now).stale,
+    "T35 never confirmed: the data's own time decides");
+  assert(dataStaleness(null, null, now).stale && dataStaleness("not a date", undefined, now).stale,
+    "T35 no usable time → cannot be vouched for → stale");
+  const t0 = 1_000_000;
+  assert(shouldRecheck("guide", t0, t0 + GUIDE_RECHECK_MS, true) && GUIDE_RECHECK_MS === 180_000,
+    "T35 while guiding: check for new data (closures) once the last check is 3 min old");
+  assert(!shouldRecheck("guide", t0, t0 + GUIDE_RECHECK_MS - 1, true), "T35 while guiding: not more often than every 3 min");
+  assert(!shouldRecheck("guide", t0, t0 + 10 * GUIDE_RECHECK_MS, false), "T35 offline: no check (the reconnect check covers it)");
+  assert(!shouldRecheck("dest", t0, t0 + 10 * GUIDE_RECHECK_MS, true), "T35 not guiding: no timed check");
+  assert(routeChangedByData({ version: "v1", key: "A>B>C" }, { version: "v2", key: "A>D>C" }),
+    "T35 new data changed the route being followed → 'Route updated'");
+  assert(!routeChangedByData({ version: "bundled", key: "" }, { version: "v2", key: "A>B>C" }),
+    "T35 a destination chosen after the data arrived is not 'Route updated'");
+  assert(!routeChangedByData({ version: "v1", key: "A>B>C" }, { version: "v2", key: "A>B>C" })
+    && !routeChangedByData({ version: "v1", key: "A>B>C" }, { version: "v1", key: "A>D>C" }) && !routeChangedByData(null, { version: "v1", key: "A>B" }),
+    "T35 same route with new data, a reroute without new data, or no earlier route → no message");
 }
 
 // ── T26: Nashik simulation mode — the simulated walker and the real navigation logic ──

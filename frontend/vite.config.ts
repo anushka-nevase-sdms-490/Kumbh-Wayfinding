@@ -95,6 +95,11 @@ export default defineConfig({
       },
     }),
   ],
+  // The smoke test serves the build with the production Content-Security-Policy
+  // (read from deploy/Caddyfile) to catch anything the policy would block.
+  preview: {
+    headers: process.env.SETU_PREVIEW_CSP ? { "Content-Security-Policy": process.env.SETU_PREVIEW_CSP } : {},
+  },
   server: {
     host: true,
     port: 5173,

@@ -9,11 +9,11 @@ on site in Nashik or on real phones in the field.**
 ```bash
 cd frontend
 npx tsc -b && npm run lint            # types; lint (0 errors, 1 old warning: an effect's deps in App.tsx)
-npm run test:routing                  # 140 checks: routing, guidance, offline, languages, simulation, queue
+npm run test:routing                  # 198 checks (T1–T35): routing, guidance, offline, languages, simulation, queue, places, SOS, assistant, report helper, stale data
 npm run build                         # production build
 
 cd ../backend
-.venv/bin/python scripts/run_api_checks.py                  # 151 API checks on a temporary SQLite database
+.venv/bin/python scripts/run_api_checks.py                  # 200 API checks on a temporary SQLite database
 SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
   .venv/bin/python scripts/run_api_checks.py                # the same on an EMPTY Postgres database
 .venv/bin/python scripts/validate_graph.py                  # data checks on the real database; must end with OK
@@ -24,8 +24,9 @@ SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
 **Browser smoke test** (`smoke_browser.py`, Phase 5):
 - builds the app, then runs the API on a copy of `setu_local.db` with a throwaway account, plus `vite preview`;
 - drives headless Chrome with a small built-in DevTools client (`cdp.py`, standard library only);
-- checks: first visit, map download, **airplane mode with both servers stopped**, Hindi, scanned and typed board codes (also offline), search, the closed-facility warning, and the volunteer offline queue end to end;
-- refuses to run if ports 8010 / 4173 are busy, and never touches the real database.
+- checks (30): first visit, map download, **airplane mode with both servers stopped**, Hindi, "Ask Setu" offline (and an emergency question → Call 112 / Send SOS), the stale-data warning, scanned and typed board codes (also offline), search, the closed-facility warning, **a lane closed on the active route → rerouted with "Route updated"**, SOS from no network to acknowledged, a lost-person case with the report helper, the operations summary, and the volunteer offline queue end to end;
+- serves the app with the **production Content-Security-Policy** (read from `deploy/Caddyfile`) and fails on any violation (a deliberate probe proves the recorder works);
+- refuses to run if ports 8010 / 4173 are busy, and never touches the real database; a failed run keeps only its server log (the database copy holds phone numbers).
 
 **The API checks never use the network:**
 - they use saved fixtures (`backend/scripts/fixtures/`);
@@ -38,12 +39,15 @@ SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
 |---|---|
 | TypeScript (`tsc -b`) | Clean |
 | ESLint | 0 errors, 1 old warning |
-| Routing and phone logic (`test:routing`) | **140 / 140** |
-| API checks, SQLite | **151 / 151**, about 16 s |
-| API checks, Postgres 16 (empty database) | **151 / 151** |
+| Routing and phone logic (`test:routing`) | **198 / 198** |
+| API checks, SQLite | **200 / 200** |
+| API checks, Postgres 16 (empty database) | **ALL OK** (Phase 8 run, throwaway database) |
+| Browser smoke test (headless Chrome, production CSP) | **30 / 30** |
+| Migration from an old database (`check_migration.py`) | **9 / 9** |
 | Production build | OK; no simulation code; no third-party URLs |
 | `validate_graph.py` on the real Nashik database | OK: 30 river crossings on bridges, 0 unsafe; main network 1,903 points |
 | `npm audit --omit=dev` (runtime packages) | 0 vulnerabilities (dev tools: see `SECURITY_AND_PRIVACY.md`) |
+| `pip-audit` on the installed backend packages | 2 advisories, both in unused leftovers of the local dev environment (`python-jose`, `ecdsa`), **not in `requirements.txt`** or the production image; the 9 pinned packages (installed versions match the pins) and their installed dependencies have no known advisories. **Open:** `pip-audit -r requirements.txt` in a fresh environment could not resolve `pydantic-core` from the package index at the time; repeat it before launch (a fresh install may pick different dependency versions) |
 | Backup → restore (Postgres, `pg_dump -Fc` as `backup.sh`, `pg_restore` into an empty DB) | All rows back (2,028 points, 2,475 lanes, versions, audit, packs); the restored server rebuilt the same pack |
 
 ### Routing and phone logic (`frontend/scripts/runRoutingTests.ts`)
@@ -97,6 +101,10 @@ Each phase was tested in Chrome on real servers, on a **copy** of the database w
 | Volunteers | `VOLUNTEER_WORKFLOW.md` | Server stopped → place and simulated walk kept → sent once, in order, when back; Marathi and Hindi screens at 375 px |
 | Admin | `ADMIN_WORKFLOW.md` | Data checks → open on the map; History; manual publishing: waiting → publish → roll back |
 | Security | `SECURITY_AND_PRIVACY.md` | No third-party requests; fonts local; no position in URLs; `start.sh` serves only built files (dev-only paths return the app page) |
+
+## End-to-end plan
+
+The 20 scenarios, each marked automated / simulated / remote / device / field, are in [E2E_TEST_PLAN.md](E2E_TEST_PLAN.md). **0 of 20 have been run on a real device or in the field.**
 
 ## Not tested yet
 

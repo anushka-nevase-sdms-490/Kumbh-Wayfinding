@@ -263,6 +263,9 @@ export const en = {
   "ask.emergencyTitle": "This sounds like an emergency.",
   "ask.emergencyCall": "Call 112 now (ambulance: 108). Setu cannot call for you — an SOS reaches Setu volunteers, not the police or an ambulance.",
   "ask.emergencyNearest": "Nearest help:",
+  "pack.stale": "Your offline data was last updated {time}. Lanes may have closed since — follow police and volunteers, and connect to the internet to update.",
+  "guide.stale": "Offline data from {time} — closures since then are not shown.",
+  "guide.routeUpdated": "Route updated with the latest information (for example, a closed path).",
   "unit.m": "{n} m",
   "unit.km": "{n} km",
 

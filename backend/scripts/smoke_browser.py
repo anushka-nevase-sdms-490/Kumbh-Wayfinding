@@ -11,6 +11,7 @@ with the Nashik data (start.sh builds it). Exit code 1 if a check fails.
 """
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -78,6 +79,12 @@ def run(chrome: Chrome, body: str, timeout_s: float = 60):
         return None
 
 
+def production_csp() -> str:
+    """The Content-Security-Policy production sends (deploy/Caddyfile)."""
+    caddy = open(os.path.join(BACKEND, "..", "deploy", "Caddyfile"), encoding="utf-8").read()
+    return re.search(r'Content-Security-Policy "([^"]+)"', caddy).group(1)
+
+
 class Servers:
     """The API (on the database copy) and the built app, stoppable for offline tests."""
 
@@ -92,7 +99,7 @@ class Servers:
                 cwd=BACKEND, env=self.env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True),
             subprocess.Popen(
                 ["npx", "vite", "preview", "--port", str(APP_PORT), "--strictPort"], cwd=FRONTEND,
-                env={**os.environ, "SETU_HTTP": "1", "SETU_BACKEND_PORT": str(API_PORT)},
+                env={**os.environ, "SETU_HTTP": "1", "SETU_BACKEND_PORT": str(API_PORT), "SETU_PREVIEW_CSP": production_csp()},
                 stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True),
         ]
         return wait_http(f"http://127.0.0.1:{API_PORT}/health") and wait_http(f"http://127.0.0.1:{APP_PORT}/")
@@ -151,20 +158,41 @@ def main() -> int:
             print(f"Servers did not start — see {tmp}/servers.log")
             return 2
         chrome = Chrome(os.path.join(tmp, "profile"))
+        # Record anything the production CSP blocks, on every page load.
+        chrome.call("Page.addScriptToEvaluateOnNewDocument", source=(
+            "document.addEventListener('securitypolicyviolation', (e) => { try {"
+            " const v = JSON.parse(localStorage.getItem('__csp') || '[]');"
+            " v.push(e.violatedDirective + ' ' + (e.blockedURI || '')); localStorage.setItem('__csp', JSON.stringify(v));"
+            " } catch {} });"))
         chrome.gps(*RAMKUND, accuracy=8, origin=APP)
         chrome.goto(APP + "/")
         run(chrome, "localStorage.setItem('setu-lang','en'); location.reload(); return 1;")
         time.sleep(3)
 
         smoke_steps(chrome, servers, db_path=db, phone=phone, pin=pin)
+        r = run(chrome, """
+          const res = await fetch('/', { cache: 'no-store' });
+          try { await fetch('https://blocked.invalid/probe'); } catch {}  // proves the recorder works
+          await sleep(300);
+          return { csp: res.headers.get('content-security-policy') || '', v: JSON.parse(localStorage.getItem('__csp') || '[]') };
+        """)
+        blocked = [v for v in (r or {}).get("v", []) if "blocked.invalid" not in v]
+        check(r and r["csp"] == production_csp() and len(r["v"]) == 1 and not blocked,
+              f"the whole run used the production Content-Security-Policy: only the deliberate probe was blocked ({(r or {}).get('v')})")
     finally:
         if chrome:
             chrome.close()
         servers.stop()
         log.close()
-    print("\nALL OK" if ok else f"\nSOME FAILED (logs: {tmp})")
+    print("\nALL OK" if ok else f"\nSOME FAILED (log kept: {tmp}/servers.log)")
     if ok:
         shutil.rmtree(tmp, ignore_errors=True)
+    else:
+        # Keep only the log: the database copy holds volunteers' phone numbers.
+        for name in os.listdir(tmp):
+            if name != "servers.log":
+                path = os.path.join(tmp, name)
+                shutil.rmtree(path, ignore_errors=True) if os.path.isdir(path) else os.remove(path)
     return 0 if ok else 1
 
 
@@ -246,6 +274,19 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
     chrome.offline(False)
     check(servers.start(), "servers back up")
 
+    # 4c. Stale saved data (Phase 8): warned offline, cleared once the server confirms it again.
+    servers.stop()
+    chrome.offline(True)
+    run(chrome, "localStorage.setItem('setu-pack-confirmed', '2026-01-01T00:00:00Z'); return 1;")
+    chrome.goto(APP + "/", settle_s=3)
+    stale = run(chrome, "await click('I am a visitor', 1000); return [...document.querySelectorAll('.pack-status.warn')].map((p) => p.innerText).join(' ');") or ""
+    chrome.offline(False)
+    check(servers.start(), "servers back up")
+    chrome.goto(APP + "/", settle_s=5)
+    fresh = run(chrome, "await click('I am a visitor', 1000); return [...document.querySelectorAll('.pack-status.warn')].map((p) => p.innerText).join(' ');") or ""
+    check("Lanes may have closed since" in stale and "Lanes may have closed since" not in fresh,
+          f"stale data: warned offline ('{stale[:60]}'), cleared once the server confirms it")
+
     # 5. QR boards, facility status and search (Phase 5), set up through the API as the test admin.
     def api(path, body=None, token=None):
         req = urllib.request.Request(f"http://127.0.0.1:{API_PORT}{path}", method="POST" if body is not None else "GET",
@@ -283,6 +324,32 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
       return [...document.querySelectorAll('.guide-gps.warn')].map((p) => p.textContent).join(' | ');
     """)
     check(r and "reported closed" in r, f"the guide warns that the destination is reported closed ({(r or '')[:90]})")
+
+    # A lane on the route is closed while the visitor is being guided (Phase 8): the phone's next
+    # data check (every 3 min while guiding; here the reconnect check) reroutes and says so.
+    pack_file = os.path.join(tempfile.mkdtemp(prefix="setu-route-"), "pack.json")
+    with open(pack_file, "w") as f:
+        json.dump(api("/api/pack/latest/json"), f)
+    codes = json.loads(subprocess.run(["npx", "--yes", "tsx", "scripts/routeCodes.ts", pack_file, ramkund, kalaram],
+                                      cwd=FRONTEND, capture_output=True, text=True, check=True).stdout.strip().splitlines()[-1])
+    shutil.rmtree(os.path.dirname(pack_file), ignore_errors=True)
+    mid = len(codes) // 2
+    lane = {"from_code": codes[mid - 1], "to_code": codes[mid]} if len(codes) >= 2 else None
+    if lane:
+        api("/api/volunteer/edge-status", {**lane, "blocked": True, "hours": 1}, token)
+    r = run(chrome, """
+      const togo = () => [...document.querySelectorAll('p, span, div')].map((e) => e.textContent).find((x) => /m to go/.test(x || '') && x.length < 60) || '';
+      const before = togo();
+      if ([...document.querySelectorAll('.guide-gps.warn')].some((p) => p.textContent.includes('Route updated'))) return { early: true };
+      window.dispatchEvent(new Event('online'));
+      const msg = await waitFor(() => [...document.querySelectorAll('.guide-gps.warn')].map((p) => p.textContent).find((x) => x.includes('Route updated')), 8000);
+      return { before, after: togo(), msg: msg || '' };
+    """)
+    check(lane and r and not r.get("early") and "Route updated" in r["msg"] and r["before"] != r["after"],
+          f"lane {lane and lane['from_code']}–{lane and lane['to_code']} closed during guidance → rerouted on the next data check, "
+          f"'Route updated' shown only then ({r and r.get('before')} → {r and r.get('after')}; early={r and r.get('early')})")
+    if lane:
+        api("/api/volunteer/edge-status", {**lane, "blocked": False}, token)
 
     chrome.goto(APP + "/", settle_s=2.5)
     r = run(chrome, f"""

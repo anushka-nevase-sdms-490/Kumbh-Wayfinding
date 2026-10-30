@@ -53,6 +53,17 @@ details.
   - any admin can publish, with no second-person approval. (`ADMIN_WORKFLOW.md`)
 - OSM imports are logged in their own report, not as individual audit entries.
 
+## Visitor safety (Phases 5–7)
+
+- **SOS goes to Setu operators, not to 112.** The app says so everywhere and always shows "Call 112". Whether anyone answers depends on a staffed console (not yet agreed with the authority).
+- **"Not sent yet" alerts** wait on the phone until it has a connection; there is no SMS fallback.
+- **Lost-person cases are off in production** until the authority approves them (`CASES_ENABLED`).
+- **"Ask Setu" understands set topics and place names**, not free conversation; no external AI is used. Its emergency words in Hindi and Marathi need a native-speaker review. Safety tips are general, not official.
+- **The report helper** recognises common words and patterns only; every suggestion must be checked by the operator.
+- **Facility status** is only as current as operators keep it; it expires automatically and then shows "not confirmed recently".
+- **Closures reach a guiding phone within about 3 minutes** (it checks for new data every 3 min while guiding, and reroutes with "Route updated"), but only while it has a connection. A phone without a connection keeps its saved data; after 12 h without confirming it with the server it shows a stale-data warning.
+- **QR boards**: link plus typed code; no in-app camera (the phone's own camera opens the link). No boards are printed or installed yet.
+
 ## Languages
 
 - The Hindi and Marathi texts were written by the developer and checked only by automated rules. **A native-speaker review is needed** before the pilot.
@@ -62,11 +73,10 @@ details.
 
 See `SECURITY_AND_PRIVACY.md` for the full list. In short:
 - **Not done yet:**
-  - no privacy notice, and no DPDP review;
-  - no professional security review;
-  - no sign-in rate limit by network address.
+  - no privacy notice, and no lawyer's DPDP review (the checklist is ready: `PRIVACY_DPDP_CHECKLIST.md`);
+  - no professional security review or penetration test (Phase 8 was a developer/supervisor review).
 - **Dev-tool advisories:** they affect only Vite 5's development server, which `start.sh` no longer exposes.
-- **The production CSP** still allows the unused Google Fonts domains; removing them is waiting for approval.
+- **Sign-in limit per network address** (30 failures / 15 min) is shared by volunteers behind one carrier address; watch it in the pilot.
 - The 423 "locked" answer reveals that a phone number has an account.
 
 ## Testing
@@ -78,7 +88,7 @@ See `SECURITY_AND_PRIVACY.md` for the full list. In short:
 ## Deployment
 
 - **Not deployed.** There is no server or domain yet. No monitoring is set up, and backups aren't yet copied off the server. (`DEPLOYMENT_READINESS.md`)
-- **All work is uncommitted.**
+- **Committed on the branch `kunal-offline-map-integration`, not pushed or merged.** The offline map files (`frontend/public/map/`, about 15 MB) are not in git.
 
 ## Simulation
 

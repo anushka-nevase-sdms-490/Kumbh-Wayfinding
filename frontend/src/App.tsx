@@ -13,7 +13,7 @@ import { RealGPSProvider } from "./lib/location/realGps";
 import type { SimulationLocationProvider } from "./lib/location/simulation";
 import type { LocationProvider } from "./lib/location/types";
 import { RAMKUND_CENTER } from "./lib/mapArea";
-import { fetchNewerPack, type PackCheck } from "./lib/packSync";
+import { dataStaleness, fetchNewerPack, routeChangedByData, shouldRecheck, type PackCheck, type RouteSnapshot } from "./lib/packSync";
 import {
   GOOD_FIX_M,
   WEAK_FIX_M,
@@ -183,6 +183,8 @@ export default function App() {
   const [navState, setNavState] = useState<NavState>("IDLE");
   const [gpsMsg, setGpsMsg] = useState<string | null>(null);
   const [rerouteMsg, setRerouteMsg] = useState<string | null>(null);
+  /** "Route updated" when new data (a closure) changed the route during guidance. */
+  const [dataRouteMsg, setDataRouteMsg] = useState<string | null>(null);
   /** Volunteer signed in on this phone (writes need it — backend app/auth.py). */
   const [auth, setAuth] = useState<StoredAuth | null>(() => loadAuth());
   /** The sign-in ended while working: ask again over the form, keeping its input. */
@@ -260,6 +262,14 @@ export default function App() {
     typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("at")
   );
   const [packCheckAt, setPackCheckAt] = useState<string | null>(null);
+  /** Last time the server confirmed the saved data is current (kept on the phone). */
+  const [packConfirmedAt, setPackConfirmedAt] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("setu-pack-confirmed");
+    } catch {
+      return null;
+    }
+  });
   /** A problem with the copy on the phone (storage full, damaged copy removed). */
   const [storageNote, setStorageNote] = useState<"full" | "damaged" | null>(null);
   const [persisted, setPersisted] = useState<boolean | null>(null);
@@ -279,6 +289,15 @@ export default function App() {
     if (seq !== packCheckSeq.current) return;
     setPackCheck(result);
     setPackCheckAt(new Date().toISOString());
+    if (result.kind === "same" || result.kind === "newer") {
+      const at = new Date().toISOString();
+      setPackConfirmedAt(at);
+      try {
+        localStorage.setItem("setu-pack-confirmed", at);
+      } catch {
+        /* private mode: the warning may show a little early */
+      }
+    }
     if (result.kind === "wrong_server") {
       // Usually a setup problem (another program on the backend port): say so.
       console.warn(
@@ -343,6 +362,16 @@ export default function App() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [reloadPack]);
+
+  // While guiding, check for new data every few minutes even with the screen
+  // on: a lane closed on the route must reach the visitor mid-walk.
+  useEffect(() => {
+    if (step !== "guide" || mode !== "user") return;
+    const timer = window.setInterval(() => {
+      if (shouldRecheck(step, lastPackCheck.current, Date.now(), navigator.onLine)) void reloadPack();
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [step, mode, reloadPack]);
 
   // A new pack has new place objects: keep the chosen start/destination in step.
   useEffect(() => {
@@ -458,6 +487,22 @@ export default function App() {
     if (!pack || !start || !dest) return null;
     return findRoute(pack, start.code, dest.code, routeOptions);
   }, [pack, start, dest, routeOptions]);
+
+  // New data changed the route while guiding (e.g. a lane on it was closed): say so.
+  const lastRouteRef = useRef<RouteSnapshot | null>(null);
+  useEffect(() => {
+    const cur = { version: pack.version, key: route?.valid ? route.codes.join(">") : "" };
+    const prev = lastRouteRef.current;
+    lastRouteRef.current = cur;
+    if (step === "guide" && routeChangedByData(prev, cur)) setDataRouteMsg(t("guide.routeUpdated"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route, pack.version]);
+
+  useEffect(() => {
+    if (!dataRouteMsg) return;
+    const timer = window.setTimeout(() => setDataRouteMsg(null), 30_000);
+    return () => window.clearTimeout(timer);
+  }, [dataRouteMsg]);
 
   const routeValidation = useMemo(() => {
     if (!route || !pack) return null;
@@ -1195,6 +1240,15 @@ export default function App() {
                   return time ? t("pack.from", { time, count }) : t("pack.fromPhone", { count });
                 })()}
           </p>
+          {packSource !== "bundled" &&
+            (() => {
+              const s = dataStaleness(packConfirmedAt, pack.generated_at);
+              return s.stale ? (
+                <p className="pack-status warn" role="status">
+                  {t("pack.stale", { time: formatPackTime(`${lang}-IN`, s.since) ?? "?" })}
+                </p>
+              ) : null;
+            })()}
           {storageNote && (
             <p className="pack-status warn" role="status">
               {storageNote === "full" ? t("pack.storageFull") : t("pack.storageDamaged")}
@@ -1654,6 +1708,13 @@ export default function App() {
             {usesMapRoads && (
               <p className="guide-gps warn">{t("guide.mapRoads")}</p>
             )}
+            {packSource !== "bundled" &&
+              (() => {
+                const s = dataStaleness(packConfirmedAt, pack.generated_at);
+                return s.stale ? (
+                  <p className="guide-gps warn">{t("guide.stale", { time: formatPackTime(`${lang}-IN`, s.since) ?? "?" })}</p>
+                ) : null;
+              })()}
             {(() => {
               const s = opStatus(dest);
               return s.kind === "closed" || s.kind === "limited" ? (
@@ -1671,6 +1732,11 @@ export default function App() {
                   ? t(live.note.key, { acc: live.note.acc ?? "" })
                   : t("start.finding")}
             </p>
+            {dataRouteMsg && (
+              <p className="guide-gps warn" role="status">
+                {dataRouteMsg}
+              </p>
+            )}
             {rerouteMsg && <p className="guide-gps warn">{rerouteMsg}</p>}
             {gpsMsg && <p className="guide-gps warn">{gpsMsg}</p>}
             <div className="guide-actions">
