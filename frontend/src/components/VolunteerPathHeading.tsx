@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDeviceHeading } from "../hooks/useDeviceHeading";
-import type { GraphEdge, QrNode } from "../lib/types";
+import { isRegisteredLocation, type GraphEdge, type QrNode } from "../lib/types";
+import { authSender, sendOrQueue } from "../lib/outbox";
+import { loadVolunteerData } from "../lib/volunteerData";
+import { useI18n } from "../i18n/context";
 import "./Volunteer.css";
 
 type Props = {
@@ -15,6 +18,7 @@ type Props = {
  */
 export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
   const heading = useDeviceHeading();
+  const { t, placeLabel } = useI18n();
   const [nodes, setNodes] = useState<QrNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -30,21 +34,11 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${apiBase}/api/pack/latest/json`);
-        if (!res.ok) return;
-        const data = (await res.json()) as {
-          nodes?: QrNode[];
-          edges?: GraphEdge[];
-        };
-        const list = (data.nodes ?? [])
-          .filter((n) => n.code.trim().toUpperCase() !== "VOLUNTEER_REGISTER")
-          .sort((a, b) => a.name.localeCompare(b.name));
-        if (!cancelled) {
-          setNodes(list);
-          setEdges(data.edges ?? []);
+        const data = await loadVolunteerData(apiBase);
+        if (data && !cancelled) {
+          setNodes(data.nodes);
+          setEdges(data.edges);
         }
-      } catch {
-        /* ignore */
       } finally {
         if (!cancelled) setLoaded(true);
       }
@@ -54,14 +48,18 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
     };
   }, [apiBase]);
 
-  const nameOf = (code: string) =>
-    nodes.find((n) => n.code.toUpperCase() === code.toUpperCase())?.name ??
-    code;
+  // The Devanagari name in Hindi/Marathi when the place has one.
+  const nameOf = (code: string) => {
+    const n = nodes.find((x) => x.code.toUpperCase() === code.toUpperCase());
+    return n ? placeLabel(n) : code;
+  };
 
   const linkedPairs = useMemo(() => {
-    const codes = new Set(nodes.map((n) => n.code.toUpperCase()));
+    // Volunteer lanes between real places (map roads have thousands of hidden junctions).
+    const codes = new Set(nodes.filter(isRegisteredLocation).map((n) => n.code.toUpperCase()));
     const pairs: { key: string; a: string; b: string; hasHeading: boolean }[] = [];
     for (const e of edges) {
+      if (e.source === "osm") continue;
       const A = e.from_code.toUpperCase();
       const B = e.to_code.toUpperCase();
       if (!codes.has(A) || !codes.has(B)) continue;
@@ -85,39 +83,39 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
     setErr(null);
     setMsg(null);
     if (!lane) {
-      setErr("Choose a lane first.");
+      setErr(t("vol.chooseLaneFirst"));
       return;
     }
     if (captured == null) {
-      setErr("Capture the walk direction first (point phone along the path).");
+      setErr(t("vol.heading.captureFirst"));
       return;
     }
     setBusy(true);
     try {
-      const res = await fetch(`${apiBase}/api/volunteer/path-heading`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from_code: fromCode,
-          to_code: toCode,
-          path_heading_deg: captured,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErr(
-          typeof data?.detail === "string"
-            ? data.detail
-            : "Could not save walk direction"
-        );
+      const r = await sendOrQueue(
+        "/api/volunteer/path-heading",
+        { from_code: fromCode, to_code: toCode, path_heading_deg: captured },
+        {
+          label: `Walk direction ${nameOf(toCode)} → ${nameOf(fromCode)}`,
+          labelKey: "vol.label.heading",
+          labelVars: { from: nameOf(toCode), to: nameOf(fromCode) },
+        },
+        authSender(apiBase)
+      );
+      if (r.kind === "refused") {
+        setErr(r.message);
+        return;
+      }
+      if (r.kind === "queued") {
+        setMsg(t("vol.queued"));
         return;
       }
       setMsg(
-        `Saved walk direction ${nameOf(toCode)} → ${nameOf(fromCode)} at ${captured.toFixed(0)}°. Arrow will follow this path, not GPS line.`
+        t("vol.heading.saved", { from: nameOf(toCode), to: nameOf(fromCode), deg: captured.toFixed(0) })
       );
       onSaved();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Network error");
+    } catch {
+      setErr(t("vol.networkError"));
     } finally {
       setBusy(false);
     }
@@ -126,33 +124,26 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
   return (
     <section className="screen flow volunteer-screen">
       <header className="volunteer-head">
-        <button type="button" className="back" onClick={onBack} aria-label="Back">
+        <button type="button" className="back" onClick={onBack} aria-label={t("vol.back")}>
           ←
         </button>
         <div>
-          <h2>Fix walk direction</h2>
-          <p>Face the phone along the real mela lane</p>
+          <h2>{t("vol.heading.title")}</h2>
+          <p>{t("vol.heading.subtitle")}</p>
         </div>
       </header>
 
       {loaded && linkedPairs.length === 0 ? (
         <div className="empty-state">
-          <strong>No walked lanes yet</strong>
-          <p>
-            Register at least two places and record the walk between them.
-            Their lane then appears here.
-          </p>
+          <strong>{t("vol.noLanesTitle")}</strong>
+          <p>{t("vol.noLanesBody")}</p>
         </div>
       ) : (
       <div className="volunteer-form">
-        <p className="field-hint">
-          Choose a lane, pick the board you are standing at, face the phone
-          along the real walk toward the other board, then capture. ✓ means the
-          lane already has a direction.
-        </p>
+        <p className="field-hint">{t("vol.heading.intro")}</p>
 
         <label>
-          Lane
+          {t("vol.lane")}
           <select
             value={laneKey}
             onChange={(e) => {
@@ -163,7 +154,7 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
             }}
           >
             <option value="" disabled>
-              Choose a lane…
+              {t("vol.chooseLane")}
             </option>
             {linkedPairs.map((p) => (
               <option key={p.key} value={p.key}>
@@ -176,7 +167,7 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
 
         {lane && (
           <label>
-            I am standing at
+            {t("vol.heading.standingAt")}
             <select
               value={standAtA ? "a" : "b"}
               onChange={(e) => {
@@ -188,29 +179,24 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
               <option value="a">{nameOf(lane.a)}</option>
               <option value="b">{nameOf(lane.b)}</option>
             </select>
-            <span className="field-hint">
-              Face the phone toward <strong>{nameOf(fromCode)}</strong> along the
-              lane, then capture.
-            </span>
+            <span className="field-hint">{t("vol.heading.faceToward", { place: nameOf(fromCode) })}</span>
           </label>
         )}
 
         <div className="coord-block">
-          <p className="section-label">Compass along the walk</p>
+          <p className="section-label">{t("vol.heading.compass")}</p>
           <p className="gps-status">
-            Live: {heading.heading.toFixed(0)}° · {heading.note}
+            {t("vol.heading.live", { deg: heading.heading.toFixed(0), note: heading.note })}
           </p>
           {!heading.secure && (
-            <p className="gps-status err">
-              Open the HTTPS (ngrok) link so the compass works.
-            </p>
+            <p className="gps-status err">{t("vol.heading.needHttps")}</p>
           )}
           <button
             type="button"
             className="btn soft block"
             onClick={() => void heading.requestPermission()}
           >
-            Enable compass / gyroscope
+            {t("vol.enableCompass")}
           </button>
           <button
             type="button"
@@ -221,12 +207,11 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
               setErr(null);
             }}
           >
-            Capture walk direction ({heading.heading.toFixed(0)}°)
+            {t("vol.heading.capture", { deg: heading.heading.toFixed(0) })}
           </button>
           {captured != null && (
             <p className="gps-status ok">
-              Captured {captured.toFixed(0)}° — facing from {nameOf(toCode)}{" "}
-              toward {nameOf(fromCode)} along the walk
+              {t("vol.heading.captured", { deg: captured.toFixed(0), from: nameOf(toCode), to: nameOf(fromCode) })}
             </p>
           )}
         </div>
@@ -240,13 +225,10 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
           disabled={busy || captured == null || !lane}
           onClick={() => void save()}
         >
-          {busy ? "Saving…" : "Save walk direction"}
+          {busy ? t("vol.saving") : t("vol.heading.save")}
         </button>
 
-        <p className="field-hint">
-          Lane turns a corner? Register a board at that turn too — one heading
-          per straight stretch of the mela lane.
-        </p>
+        <p className="field-hint">{t("vol.heading.cornerHint")}</p>
       </div>
       )}
     </section>

@@ -1,0 +1,4 @@
+{
+  "_about": "River/weir crossings WITHOUT a mapped OSM bridge that a person has checked and approved for walking. Only listed OSM way ids are kept by scripts/import_osm.py network; everything else unbridged is left out. status: remotely_reviewed | volunteer_verified | officially_verified. Never add an entry without checking it. See docs/ROUTING_GRAPH_VALIDATION.md.",
+  "crossings": []
+}

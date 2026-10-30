@@ -10,4 +10,6 @@ if [[ ! -d .venv ]]; then
   python3 -m venv .venv
   .venv/bin/pip install -r requirements.txt
 fi
-exec .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# Trust X-Forwarded-For only from a proxy on this machine (Vite dev proxy).
+exec .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload \
+  --forwarded-allow-ips "127.0.0.1,::1,::ffff:127.0.0.1"

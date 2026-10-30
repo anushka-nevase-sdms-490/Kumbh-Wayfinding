@@ -1,0 +1,46 @@
+# Setu production web server: HTTPS (Let's Encrypt), the PWA, and /api → backend.
+{
+	email {$ACME_EMAIL}
+}
+
+{$SETU_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(self)"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+	}
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+	handle /health {
+		reverse_proxy api:8000
+	}
+
+	# Offline map files: a missing one is a 404, never index.html (the service
+	# worker must not cache a page as a tile).
+	handle /map/* {
+		root * /srv
+		header Cache-Control "public, max-age=86400"
+		file_server
+	}
+
+	handle /assets/* {
+		root * /srv
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	handle {
+		root * /srv
+		# The app shell and service worker must always be re-checked, or phones
+		# keep an old version.
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

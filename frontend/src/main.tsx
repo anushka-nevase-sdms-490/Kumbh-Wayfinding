@@ -1,6 +1,14 @@
 import { Component, type ErrorInfo, type ReactNode, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { LangProvider } from "./i18n/LangProvider";
+// Fonts are served from this site (no Google Fonts: visitors' phones talk to
+// nobody else, and the fonts work offline from the first visit).
+import "@fontsource/figtree/latin-400.css";
+import "@fontsource/figtree/latin-600.css";
+import "@fontsource/figtree/latin-700.css";
+import "@fontsource/bricolage-grotesque/latin-700.css";
+import "@fontsource/bricolage-grotesque/latin-800.css";
 import "./index.css";
 
 class ErrorBoundary extends Component<
@@ -59,7 +67,9 @@ if (!root) {
   createRoot(root).render(
     <StrictMode>
       <ErrorBoundary>
-        <App />
+        <LangProvider>
+          <App />
+        </LangProvider>
       </ErrorBoundary>
     </StrictMode>
   );

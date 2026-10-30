@@ -1,0 +1,98 @@
+/* Development-only simulation controls — loud on purpose. */
+.sim-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  padding: 4px 10px;
+  background: repeating-linear-gradient(45deg, #7c2d12, #7c2d12 10px, #9a3412 10px, #9a3412 20px);
+  color: #fff;
+  font: 700 0.75rem/1.4 system-ui, sans-serif;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+.sim-panel {
+  position: fixed;
+  left: 8px;
+  bottom: 8px;
+  z-index: 60;
+  width: min(360px, calc(100vw - 16px));
+  max-height: 70vh;
+  overflow-y: auto;
+  border: 2px solid #9a3412;
+  border-radius: 12px;
+  background: rgba(255, 251, 245, 0.97);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.2);
+  font: 0.8rem/1.35 system-ui, sans-serif;
+  color: #1c1917;
+}
+
+.sim-panel.closed {
+  width: auto;
+}
+
+.sim-toggle {
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: #9a3412;
+  color: #fff;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sim-body {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.sim-line {
+  margin: 0;
+}
+
+.sim-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.sim-row button,
+.sim-row select,
+.sim-exit {
+  min-height: 34px;
+  padding: 4px 10px;
+  border: 1px solid #d6d3d1;
+  border-radius: 8px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sim-row select {
+  max-width: 170px;
+}
+
+.sim-row button.on {
+  border-color: #9a3412;
+  background: #fed7aa;
+}
+
+.sim-row button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sim-exit {
+  border-color: #9a3412;
+  color: #9a3412;
+  font-weight: 600;
+}
+
+body:has(.sim-banner) .app {
+  padding-top: 22px;
+}

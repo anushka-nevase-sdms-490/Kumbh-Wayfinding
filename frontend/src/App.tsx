@@ -1,25 +1,32 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { QRCodeSVG } from "qrcode.react";
-import { QrScanner } from "./components/QrScanner";
-import { BoardQrGallery } from "./components/BoardQrGallery";
-import { DirectionArrow } from "./components/DirectionArrow";
-import { ArGuide } from "./components/ArGuide";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { VolunteerRegisterForm } from "./components/VolunteerRegisterForm";
 import "./components/Volunteer.css";
-import { useDeviceHeading } from "./hooks/useDeviceHeading";
 import { useLivePosition } from "./hooks/useLivePosition";
-import { usePhoneAppBase } from "./hooks/usePhoneAppBase";
-import { useSmoothedBearing } from "./hooks/useSmoothedBearing";
-import { findRoute, edgeBetween, walkHeadingDeg, edgeKey, buildPathInstructions, validateRoute, isReachable } from "./lib/router";
-import { apiBase } from "./lib/network";
+import { findRoute, edgeBetween, edgeKey, buildPathInstructions, validateRoute } from "./lib/router";
+import { mapRoadParts, routeLine } from "./lib/mapData";
+import { OFF_ROUTE_FIXES, ON_ROUTE_M, offRouteLimitM, reachedPlace, routeProgress } from "./lib/progress";
+import { apiBase, isSecureEnough } from "./lib/network";
+import { loadStoredPack, saveStoredPack, storagePersisted } from "./lib/packStore";
+import { simulationRequested } from "./lib/location/config";
+import { setSimulatedPositions } from "./lib/location/geo";
+import { RealGPSProvider } from "./lib/location/realGps";
+import type { SimulationLocationProvider } from "./lib/location/simulation";
+import type { LocationProvider } from "./lib/location/types";
+import { RAMKUND_CENTER } from "./lib/mapArea";
+import { fetchNewerPack, type PackCheck } from "./lib/packSync";
 import {
-  bearingDeg,
+  GOOD_FIX_M,
+  WEAK_FIX_M,
+  placesByDistance,
+  suggestStart,
+  type PlaceDistance,
+} from "./lib/nearest";
+import {
   haversineM,
+  isFieldVerified,
   isRegisteredLocation,
-  isVolunteerRegisterPayload,
-  normalizeCode,
+  isUsablePack,
   placeTone,
-  volunteerRegisterLink,
   type OfflinePack,
   type QrNode,
 } from "./lib/types";
@@ -30,15 +37,23 @@ import {
   type NavState,
 } from "./lib/navigation";
 import { VolunteerPathHeading } from "./components/VolunteerPathHeading";
+import { VolunteerLogin } from "./components/VolunteerLogin";
+import { AUTH_EXPIRED_EVENT, loadAuth, logout, type StoredAuth } from "./lib/auth";
+import { OfflineMapCard } from "./components/OfflineMapCard";
+import { LangPicker } from "./components/LangPicker";
+import { useI18n } from "./i18n/context";
+import { instructionLines, turnText } from "./i18n/instructions";
+import type { MessageKey } from "./i18n/messages";
+import { useRegisterSW } from "virtual:pwa-register/react";
 import { VolunteerObstacle } from "./components/VolunteerObstacle";
+import { VolunteerOutbox } from "./components/VolunteerOutbox";
+import { authSender, flushOutbox, idbOutbox } from "./lib/outbox";
 import {
   BlockIcon,
-  BoardsIcon,
   ChevronIcon,
   CompassIcon,
   PinPlusIcon,
   PlaceIcon,
-  ScanIcon,
   VolunteerIcon,
   WalkerIcon,
 } from "./components/Icons";
@@ -47,105 +62,264 @@ import {
   areaOf,
   officialPlaceFor,
   siteCategory,
-  siteCategoryLabel,
   type Area,
 } from "./lib/officialPlaces";
-import packFallback from "./data/pack.json";
+import { FALLBACK_PACK } from "./lib/fallbackPack";
+
+// MapLibre is ~1 MB: load it only when a map screen opens.
+const LazyOfflineMap = lazy(() =>
+  import("./components/OfflineMap").then((m) => ({ default: m.OfflineMap }))
+);
+
+// Development-only Nashik simulation (docs/NASHIK_SIMULATION_MODE.md). In a
+// normal production build this is null and the simulation code is left out.
+const LazySimulationPanel =
+  import.meta.env.DEV || import.meta.env.VITE_ENABLE_SIMULATION === "1"
+    ? lazy(() => import("./components/SimulationPanel"))
+    : null;
+
+// Admin map: admins only, so it is loaded only when opened.
+const LazyAdminMap = lazy(() =>
+  import("./components/AdminMap").then((m) => ({ default: m.AdminMap }))
+);
+
+function OfflineMap(props: ComponentProps<typeof LazyOfflineMap>) {
+  return (
+    <Suspense fallback={<div className={`offline-map-loading ${props.className ?? ""}`} />}>
+      <LazyOfflineMap {...props} />
+    </Suspense>
+  );
+}
 
 type Mode = "gate" | "user" | "volunteer";
-type UserStep = "home" | "start" | "boards" | "destination" | "guide";
-type VolStep = "home" | "register" | "path-heading" | "obstacle";
+type UserStep = "home" | "start" | "destination" | "guide";
+type VolStep = "home" | "register" | "path-heading" | "obstacle" | "admin";
 
 const API = apiBase();
-/** Auto “you reached” when live GPS is this close to the destination board. */
+/** Re-check the server for a newer pack at most this often when the app is reopened. */
+const PACK_RECHECK_MS = 5 * 60 * 1000;
+/** Walking time for the guide: about 1.2 m/s in a crowd, at least 1 min. */
+function walkMinutes(meters: number): number {
+  return Math.max(1, Math.ceil(meters / 1.2 / 60));
+}
+
+/** Closer than this to the next turn: "Turn right now". */
+const TURN_NOW_M = 15;
+/** Off route: try this many nearest places/junctions as the new start. */
+const REROUTE_CANDIDATES = 25;
+
+/**
+ * Random id this phone keeps, so its "path blocked" reports count as one
+ * reporter (many phones share a mobile-network IP). Not linked to the person.
+ */
+function deviceId(): string {
+  try {
+    let id = localStorage.getItem("setu-device");
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem("setu-device", id);
+    }
+    return id;
+  } catch {
+    return (sessionDevice ??= crypto.randomUUID());
+  }
+}
+let sessionDevice: string | undefined;
+
+/** "places-20261030.json" → "2026-10-30" (the OpenStreetMap download date). */
+function osmSnapshotDate(file: string): string {
+  const m = /(\d{4})(\d{2})(\d{2})/.exec(file);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : file;
+}
+
+/** "29 Oct, 14:05" in the phone's time zone (first readable time given), or null. */
+function formatPackTime(locale: string, ...isos: (string | null | undefined)[]): string | null {
+  const t = isos
+    .map((iso) => (iso ? new Date(iso) : null))
+    .find((d) => d && !Number.isNaN(d.getTime()));
+  if (!t) return null;
+  return t.toLocaleString(locale, {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    // Latin digits in every language (Marathi Intl would use ०-९).
+    numberingSystem: "latn",
+  });
+}
+/** Auto “you reached” when live GPS is this close to the destination. */
 const ARRIVE_WITHIN_M = DEFAULT_DESTINATION_RADIUS_M;
 
 export default function App() {
-  const phoneOrigin = usePhoneAppBase();
+  const { t, dist, lang, placeLabel, placeAltLabel } = useI18n();
+  /** Name to show for a place; hidden map junctions have none. */
+  const placeName = (n: QrNode) => (n.name.trim() ? placeLabel(n) : t("place.junction"));
+  const categoryLabel = (nodeType: string) => t(`cat.${siteCategory(nodeType)}` as MessageKey);
   const [mode, setMode] = useState<Mode>("gate");
-  const [pack, setPack] = useState<OfflinePack>(packFallback as OfflinePack);
+  const [pack, setPack] = useState<OfflinePack>(FALLBACK_PACK);
   const [step, setStep] = useState<UserStep>("home");
   const [volStep, setVolStep] = useState<VolStep>("home");
   const [start, setStart] = useState<QrNode | null>(null);
   const [dest, setDest] = useState<QrNode | null>(null);
-  const [showScanner, setShowScanner] = useState(false);
-  const [scanTarget, setScanTarget] = useState<"start" | "reanchor">("start");
-  const [guideView, setGuideView] = useState<"camera" | "compass">("camera");
   const [gpsArrived, setGpsArrived] = useState(false);
   const [sessionBlocked, setSessionBlocked] = useState<Set<string>>(
     () => new Set()
   );
   const [navState, setNavState] = useState<NavState>("IDLE");
-  const heading = useDeviceHeading();
-
-  const reloadPack = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/api/pack/latest/json`);
-      if (!res.ok) return;
-      const data = (await res.json()) as OfflinePack;
-      if (Array.isArray(data?.nodes) && data.nodes.length > 0) {
-        setPack(data);
-      }
-    } catch {
-      /* keep current */
-    }
+  const [gpsMsg, setGpsMsg] = useState<string | null>(null);
+  const [rerouteMsg, setRerouteMsg] = useState<string | null>(null);
+  /** Volunteer signed in on this phone (writes need it — backend app/auth.py). */
+  const [auth, setAuth] = useState<StoredAuth | null>(() => loadAuth());
+  /** The sign-in ended while working: ask again over the form, keeping its input. */
+  const [authLost, setAuthLost] = useState(false);
+  useEffect(() => {
+    const onExpired = () => {
+      setAuth(null);
+      setAuthLost(true);
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
   }, []);
 
+  const reloadPackRef = useRef<() => Promise<unknown>>(async () => undefined);
+  // Volunteer changes saved without internet: send them when the phone is
+  // online (at start, after sign-in, on reconnect, and every 30 s while any wait).
+  useEffect(() => {
+    if (!auth) return;
+    let alive = true;
+    const send = async () => {
+      try {
+        const waiting = (await idbOutbox.list()).some((i) => i.status === "waiting");
+        if (!waiting || !alive) return;
+        const r = await flushOutbox(authSender(API));
+        if (r.sent > 0 && alive) void reloadPackRef.current();
+      } catch {
+        /* storage unavailable: nothing was queued */
+      }
+    };
+    void send();
+    window.addEventListener("online", send);
+    const timer = window.setInterval(send, 30_000);
+    return () => {
+      alive = false;
+      window.removeEventListener("online", send);
+      window.clearInterval(timer);
+    };
+  }, [auth]);
+  /** A new app version is installed and waiting (service worker). */
+  const {
+    needRefresh: [updateReady],
+    updateServiceWorker,
+  } = useRegisterSW();
+
+  /** Where the current pack came from — decides what may replace it. */
+  const [packSource, setPackSource] = useState<"bundled" | "stored" | "server">("bundled");
+  const [packSavedAt, setPackSavedAt] = useState<string | null>(null);
+  /** Last answer from the server's pack check (why routes may be missing). */
+  const [packCheck, setPackCheck] = useState<PackCheck | null>(null);
+  const [packCheckAt, setPackCheckAt] = useState<string | null>(null);
+  /** A problem with the copy on the phone (storage full, damaged copy removed). */
+  const [storageNote, setStorageNote] = useState<"full" | "damaged" | null>(null);
+  const [persisted, setPersisted] = useState<boolean | null>(null);
+  const packRef = useRef(pack);
+  packRef.current = pack;
+  const packSourceRef = useRef(packSource);
+  packSourceRef.current = packSource;
+  /** Only the latest check may apply its result. */
+  const packCheckSeq = useRef(0);
+  const lastPackCheck = useRef(0);
+
+  /** Ask the server for a newer pack; keep what we have if it can't be reached. */
+  const reloadPack = useCallback(async () => {
+    const seq = ++packCheckSeq.current;
+    lastPackCheck.current = Date.now();
+    const result = await fetchNewerPack(API, packRef.current);
+    if (seq !== packCheckSeq.current) return;
+    setPackCheck(result);
+    setPackCheckAt(new Date().toISOString());
+    if (result.kind === "wrong_server") {
+      // Usually a setup problem (another program on the backend port): say so.
+      console.warn(
+        `[Setu] /api/pack/latest answered HTTP ${result.status} — is the Setu backend on the port the app's /api goes to?`
+      );
+    }
+    if (result.kind !== "newer") return;
+    // Refs now, so a stored pack still loading can't overwrite this one.
+    packRef.current = result.pack;
+    packSourceRef.current = "server";
+    setPack(result.pack);
+    setPackSource("server");
+    setPackSavedAt(new Date().toISOString());
+    // Shown on the home screen if the phone could not keep it (storage full).
+    void saveStoredPack(result.pack).then((r) => {
+      setStorageNote(r === "quota" ? "full" : null);
+      void storagePersisted().then(setPersisted);
+    });
+  }, []);
+  reloadPackRef.current = reloadPack;
+
+  // Start from the pack saved on the phone, then check the server.
   useEffect(() => {
     let cancelled = false;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 2000);
-
     (async () => {
-      try {
-        const res = await fetch(`${API}/api/pack/latest/json`, {
-          signal: controller.signal,
-        });
-        if (!res.ok) return;
-        const data = (await res.json()) as OfflinePack;
-        if (!cancelled && Array.isArray(data?.nodes) && data.nodes.length > 0) {
-          setPack(data);
-        }
-      } catch {
-        /* keep bundled pack */
-      } finally {
-        window.clearTimeout(timer);
+      const loaded = await loadStoredPack();
+      if (cancelled) return;
+      if (loaded.kind === "corrupt" || (loaded.kind === "unavailable" && loaded.reset)) {
+        setStorageNote("damaged");
       }
+      void storagePersisted().then(setPersisted);
+      if (loaded.kind === "ok" && isUsablePack(loaded.stored.pack) && packSourceRef.current === "bundled") {
+        setPack(loaded.stored.pack);
+        setPackSource("stored");
+        setPackSavedAt(loaded.stored.savedAt);
+        packRef.current = loaded.stored.pack;
+        // A copy saved before checksums: save it again so damage can be noticed later.
+        if (!loaded.stored.checksum) void saveStoredPack(loaded.stored.pack);
+      }
+      await reloadPack();
     })();
-
     return () => {
       cancelled = true;
-      controller.abort();
-      window.clearTimeout(timer);
     };
-  }, []);
+  }, [reloadPack]);
 
-  // Phone camera scanned a URL QR → open the right mode
+  // Check again when the network comes back, or when the app is reopened.
+  useEffect(() => {
+    const onOnline = () => void reloadPack();
+    const onVisible = () => {
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - lastPackCheck.current > PACK_RECHECK_MS
+      ) {
+        void reloadPack();
+      }
+    };
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [reloadPack]);
+
+  // A new pack has new place objects: keep the chosen start/destination in step.
+  useEffect(() => {
+    const fresh = (n: QrNode | null) =>
+      n ? (pack.nodes.find((x) => x.code === n.code) ?? n) : n;
+    setStart(fresh);
+    setDest(fresh);
+  }, [pack]);
+
+  // Plain link straight into volunteer mode: /?mode=volunteer
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const modeParam = params.get("mode");
-    const register = params.get("register");
-    const board = params.get("board") || params.get("start");
-
-    if (modeParam === "volunteer" || register === "1") {
+    if (params.get("mode") === "volunteer") {
       setMode("volunteer");
-      setVolStep("register");
+      setVolStep("home");
       window.history.replaceState({}, "", window.location.pathname);
-      return;
     }
-
-    if (board && pack.nodes.length) {
-      const node = pack.nodes.find(
-        (n) => n.code.toUpperCase() === normalizeCode(board)
-      );
-      if (node) {
-        setMode("user");
-        setStart(node);
-        setStep("destination");
-        window.history.replaceState({}, "", window.location.pathname);
-      }
-    }
-  }, [pack]);
+  }, []);
 
   /** Only volunteer-registered places (hide old SETU seed names). */
   const registeredPlaces = useMemo(
@@ -193,6 +367,23 @@ export default function App() {
     [sessionBlocked]
   );
 
+  // Simulation on the volunteer screens: walk the real lanes from the place
+  // the simulated volunteer stands at (development only).
+  const volunteerRouteTo = useCallback(
+    (from: { lat: number; lon: number }, code: string) => {
+      let start: QrNode | null = null;
+      let best = 40; // metres: must be standing at a place
+      for (const p of registeredPlaces) {
+        const d = haversineM(from.lat, from.lon, p.lat, p.lon);
+        if (d < best) [start, best] = [p, d];
+      }
+      if (!start || start.code === code) return [];
+      const r = findRoute(pack, start.code, code, routeOptions);
+      return r.valid && r.codes.length >= 2 ? routeLine(pack, r.codes) : [];
+    },
+    [pack, registeredPlaces, routeOptions]
+  );
+
   const route = useMemo(() => {
     if (!pack || !start || !dest) return null;
     return findRoute(pack, start.code, dest.code, routeOptions);
@@ -223,7 +414,7 @@ export default function App() {
   const fromLat = start?.lat;
   const fromLon = start?.lon;
 
-  const scannedArrived =
+  const startIsDest =
     !!start && !!dest && start.code.toUpperCase() === dest.code.toUpperCase();
 
   const startIdx = hasPath
@@ -231,6 +422,8 @@ export default function App() {
     : -1;
   const pathFromHere =
     hasPath && startIdx >= 0 ? route!.codes.slice(startIdx) : route?.codes ?? [];
+  // Stable key for effects/memos that depend on the path contents.
+  const pathKey = pathFromHere.join("|");
 
   const nextOnPath =
     pathFromHere.length >= 2
@@ -239,26 +432,107 @@ export default function App() {
         ) ?? nextNode
       : nextNode;
 
+  // Next place the visitor can recognise (hidden map junctions skipped), the
+  // lanes between the next junction and it, and whether any lane ahead is a
+  // map road no volunteer has walked. Per route, not per render.
+  const { nextNamed, laterToNamedM, usesMapRoads } = useMemo(() => {
+    const byCode = new Map(pack.nodes.map((n) => [n.code.toUpperCase(), n]));
+    const idx = pathFromHere.findIndex((code, i) => {
+      const n = byCode.get(code.toUpperCase());
+      return i > 0 && !!n && isRegisteredLocation(n) && n.name.trim().length > 0;
+    });
+    const lane = (i: number) => edgeBetween(pack.edges, pathFromHere[i], pathFromHere[i + 1]);
+    let later = 0;
+    for (let i = 1; i < idx; i++) later += lane(i)?.distance_m ?? 0;
+    return {
+      nextNamed: idx > 0 ? byCode.get(pathFromHere[idx].toUpperCase()) : undefined,
+      laterToNamedM: later,
+      usesMapRoads: pathFromHere.slice(1).some((_, i) => {
+        const e = lane(i);
+        return !!e && !isFieldVerified(e);
+      }),
+    };
+    // pathKey stands in for pathFromHere (a new array every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pack, pathKey]);
+
   // Last hop only — avoid mid-route GPS noise saying “arrived”.
   const onFinalLegToDest =
     !!dest &&
     ((pathFromHere.length === 2 &&
       pathFromHere[1].toUpperCase() === dest.code.toUpperCase()) ||
-      scannedArrived);
+      startIsDest);
 
-  const destReachable =
-    !!start &&
-    !!dest &&
-    isReachable(pack, start.code, dest.code, routeOptions);
+  // Same search, same options as `route` — reuse it instead of re-running A*
+  // on every render (heading updates re-render many times a second).
+  const destReachable = !!route?.valid && route.codes.length > 0;
 
   const guideActive =
-    mode === "user" && step === "guide" && !!dest && !gpsArrived && !scannedArrived;
-  const live = useLivePosition(guideActive);
+    mode === "user" && step === "guide" && !!dest && !gpsArrived && !startIsDest;
+  // Simulation: only when the build allows it and the developer asked (?sim=1).
+  const [simOn] = useState(() => LazySimulationPanel !== null && simulationRequested());
+  const [simProvider, setSimProvider] = useState<SimulationLocationProvider | null>(null);
+  // Volunteer screens read GPS through lib/location/geo: simulated only while the panel runs.
+  useEffect(() => {
+    setSimulatedPositions(simOn ? simProvider : null);
+  }, [simOn, simProvider]);
+  const [simPicking, setSimPicking] = useState(false);
+  // Real GPS and simulation are separate sources; the simulation never touches the phone's GPS.
+  const locationProvider: LocationProvider | null = simOn ? simProvider : RealGPSProvider;
+  const live = useLivePosition(
+    (guideActive || (mode === "user" && step === "start")) && locationProvider !== null,
+    locationProvider ?? RealGPSProvider
+  );
+  const gpsAllowed =
+    simOn || (isSecureEnough() && typeof navigator !== "undefined" && !!navigator.geolocation);
+  const onSimMapTap =
+    simPicking && simProvider
+      ? (lat: number, lon: number) => {
+          simProvider.placeAt(lat, lon);
+          setSimPicking(false);
+        }
+      : undefined;
+
+  // Start screen: nearest places to the live fix (visitor always confirms).
+  const startFix = live.pos
+    ? { lat: live.pos.lat, lon: live.pos.lon, accuracyM: live.pos.accuracyM }
+    : null;
+  const startSuggestion = useMemo(
+    () => suggestStart(registeredPlaces, startFix),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [registeredPlaces, startFix?.lat, startFix?.lon, startFix?.accuracyM]
+  );
+  const startList: (PlaceDistance | { node: QrNode; distanceM: null })[] =
+    startFix && startFix.accuracyM <= WEAK_FIX_M
+      ? placesByDistance(registeredPlaces, startFix)
+      : registeredPlaces.map((node) => ({ node, distanceM: null }));
+
+  /** Guide: move the start to the place the visitor is standing at now. */
+  function updatePositionFromGps() {
+    const fix = live.pos;
+    if (!fix || fix.accuracyM > GOOD_FIX_M) {
+      setGpsMsg(t("guide.gpsNotAccurate"));
+      return;
+    }
+    const nearest = placesByDistance(registeredPlaces, fix)[0];
+    if (!nearest || nearest.distanceM > GOOD_FIX_M) {
+      setGpsMsg(t("guide.notAtPlace"));
+      return;
+    }
+    setGpsMsg(null);
+    setStart(nearest.node);
+  }
 
   useEffect(() => {
-    setGpsArrived(false);
     setSessionBlocked(new Set());
+    setRerouteMsg(null);
   }, [dest?.code]);
+
+  // A new trip (or a fresh start point) must not inherit the last "arrived".
+  useEffect(() => {
+    setGpsArrived(false);
+    setGpsMsg(null);
+  }, [dest?.code, start?.code, step]);
 
   useEffect(() => {
     if (step !== "guide") {
@@ -274,7 +548,7 @@ export default function App() {
 
   useEffect(() => {
     if (step !== "guide" || !start || !dest) return;
-    if (scannedArrived || gpsArrived) {
+    if (startIsDest || gpsArrived) {
       setNavState((s) => nextNavState(s, "ARRIVE"));
       return;
     }
@@ -285,13 +559,22 @@ export default function App() {
     setNavState((s) =>
       nextNavState(s, s === "REROUTING" ? "REROUTE_OK" : "ROUTE_OK")
     );
-  }, [step, start, dest, hasPath, scannedArrived, gpsArrived, sessionBlocked]);
+  }, [step, start, dest, hasPath, startIsDest, gpsArrived, sessionBlocked]);
 
   useEffect(() => {
-    if (!guideActive || !dest || !live.pos || gpsArrived || scannedArrived) {
+    if (!guideActive || !dest || !live.pos || gpsArrived || startIsDest) {
       return;
     }
-    const distM = haversineM(live.pos.lat, live.pos.lon, dest.lat, dest.lon);
+    // Distance left *along the final lane*, and only while on that lane: a
+    // straight line could "arrive" from the wrong bank of a river.
+    const onLane =
+      onFinalLegToDest && live.pos.usable
+        ? routeProgress(pack, pathFromHere, live.pos)
+        : null;
+    const distM =
+      onLane && onLane.offRouteM <= Math.max(ON_ROUTE_M, live.pos.accuracyM)
+        ? onLane.remainingM
+        : null;
     const check = evaluateArrival({
       startCode: start?.code,
       destCode: dest.code,
@@ -304,38 +587,36 @@ export default function App() {
     if (check.arrived && check.reason === "proximity") {
       setGpsArrived(true);
     }
+    // pathKey stands in for pathFromHere (a new array every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     guideActive,
     dest,
     start?.code,
     live.pos,
     gpsArrived,
-    scannedArrived,
+    startIsDest,
     onFinalLegToDest,
     destReachable,
+    pack,
+    pathKey,
   ]);
 
-  const arrived = scannedArrived || gpsArrived;
+  const arrived = startIsDest || gpsArrived;
 
+  // Reroutes this phone at once. For everyone else it is only a report: a
+  // volunteer checks the lane and confirms a timed block (backend reports.py).
   function reportPathBlocked() {
     if (!start || !nextOnPath) return;
     const key = edgeKey(start.code, nextOnPath.code);
     setSessionBlocked((prev) => new Set(prev).add(key));
     setNavState((s) => nextNavState(s, "OBSTACLE"));
-    // Persist for other users when possible.
-    void fetch(`${API}/api/volunteer/edge-status`, {
+    setGpsMsg(t("guide.reported"));
+    void fetch(`${API}/api/reports`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from_code: start.code,
-        to_code: nextOnPath.code,
-        blocked: true,
-        walkable: false,
-        obstacle_note: "user_reported",
-      }),
-    })
-      .then(() => reloadPack())
-      .catch(() => undefined);
+      body: JSON.stringify({ from_code: start.code, to_code: nextOnPath.code, device: deviceId() }),
+    }).catch(() => undefined); // offline: this phone still avoids the lane
   }
 
   const edgeLegM =
@@ -348,65 +629,110 @@ export default function App() {
 
   const legDistanceM = edgeLegM;
 
-  // Prefer volunteer-captured walk heading (around desks/glass). Fall back to
-  // GPS line only when no path heading was stored on that edge.
-  const pathWalkHeading =
-    pathFromHere.length >= 2
-      ? walkHeadingDeg(pack.edges, pathFromHere[0], pathFromHere[1])
-      : null;
-  const bearingToNext =
-    pathWalkHeading != null
-      ? pathWalkHeading
-      : fromLat != null && fromLon != null && nextOnPath
-        ? bearingDeg(fromLat, fromLon, nextOnPath.lat, nextOnPath.lon)
-        : 0;
-  const rawArrowDeg = (bearingToNext - heading.heading + 360) % 360;
-  const arrowDeg = useSmoothedBearing(
-    rawArrowDeg,
-    mode === "user" && step === "guide" && hasPath && !arrived
+  // Map: the route drawn along walked lanes from the current place.
+  const routeCoords = useMemo(
+    () => (hasPath ? routeLine(pack, pathFromHere) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hasPath, pack, pathKey]
   );
 
-  const handleUserScan = useCallback(
-    (code: string) => {
-      setShowScanner(false);
-      if (isVolunteerRegisterPayload(code)) {
-        alert(
-          "That is the Volunteer Registration QR. Open Volunteer mode to use it."
-        );
-        return;
-      }
-      const normalized = normalizeCode(code);
-      const node = pack.nodes.find(
-        (n) => n.code.toUpperCase() === normalized
-      );
-      if (!node) {
-        alert(`Unknown board code: ${code}`);
-        return;
-      }
-      setStart(node);
-      if (scanTarget === "start") setStep("destination");
-    },
-    [pack, scanTarget]
+  const routeMapRoads = useMemo(
+    () => (hasPath ? mapRoadParts(pack, pathFromHere) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hasPath, pack, pathKey]
   );
 
-  const handleArScan = useCallback(
-    (code: string) => {
-      if (isVolunteerRegisterPayload(code)) return;
-      const normalized = normalizeCode(code);
-      const node = pack.nodes.find(
-        (n) => n.code.toUpperCase() === normalized
-      );
-      if (node) setStart(node);
-    },
-    [pack]
-  );
-
-  const demoCodes = useMemo(
+  // Where the visitor is along the route, from live GPS (null without a usable fix).
+  const progress = useMemo(
     () =>
-      registeredPlaces
-        .slice(0, 8)
-        .map((n) => ({ code: n.code, name: n.name })),
-    [registeredPlaces]
+      guideActive && hasPath && live.pos?.usable
+        ? routeProgress(pack, pathFromHere, live.pos)
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [guideActive, hasPath, pack, pathKey, live.pos]
+  );
+
+  // Distance still to walk: along the route from the GPS position, else the
+  // full route from the current place.
+  const toNextM = progress ? progress.toNextM : legDistanceM;
+  const remainingM = progress ? progress.remainingM : (route?.totalDistanceM ?? 0);
+
+  // What to do next: the coming turn, with the distance to it. The first
+  // instruction's stretch can span several lanes; part of the first lane may
+  // already be walked.
+  const walkedOnLaneM = progress ? Math.max(0, legDistanceM - progress.toNextM) : 0;
+  const guideNow = (() => {
+    const first = pathInstructions[0];
+    if (!first) return t("guide.follow");
+    const leftM = Math.max(0, first.distanceM - walkedOnLaneM);
+    const then = pathInstructions[1];
+    if (!then || then.kind === "arrive" || then.kind === "straight") {
+      return t("guide.straightFor", { dist: dist(leftM) });
+    }
+    const turn = turnText(lang, then);
+    return leftM > TURN_NOW_M ? t("guide.inDist", { dist: dist(leftM), turn }) : t("guide.turnNow", { turn });
+  })();
+
+  // Reached the next place on the route → it becomes the current place, so the
+  // route, the next instruction and "Path blocked" move along by themselves.
+  // One place at a time, and only when the visitor is actually there.
+  useEffect(() => {
+    if (!progress || !live.pos || pathFromHere.length < 3) return;
+    if (!reachedPlace(progress, live.pos.accuracyM)) return;
+    const code = pathFromHere[1];
+    const node = pack.nodes.find((n) => n.code.toUpperCase() === code.toUpperCase());
+    if (node) setStart(node);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progress]);
+
+  // Off the route for several fixes in a row → new route from the nearest
+  // place that can still reach the destination. Always the nearest one (the
+  // current place included), so being off every route cannot ping-pong.
+  const offRouteFixesRef = useRef(0);
+  useEffect(() => {
+    if (!progress || !live.pos || !dest) {
+      offRouteFixesRef.current = 0;
+      return;
+    }
+    if (progress.offRouteM <= offRouteLimitM(live.pos.accuracyM)) {
+      offRouteFixesRef.current = 0;
+      setRerouteMsg(null);
+      return;
+    }
+    offRouteFixesRef.current += 1;
+    if (offRouteFixesRef.current < OFF_ROUTE_FIXES) return;
+    offRouteFixesRef.current = 0;
+    // Map junctions count too: the nearest point on any road is the best restart.
+    const from = placesByDistance(pack.nodes, live.pos)
+      .slice(0, REROUTE_CANDIDATES)
+      .find(
+        (p) =>
+          // Never the destination itself: that would count as "arrived".
+          p.node.code !== dest.code &&
+          findRoute(pack, p.node.code, dest.code, routeOptions).valid
+      );
+    if (!from) return;
+    const named = isRegisteredLocation(from.node) && from.node.name.trim().length > 0;
+    if (from.node.code === start?.code) {
+      setRerouteMsg(
+        named
+          ? t("rr.headBack", { name: placeLabel(from.node), dist: dist(from.distanceM) })
+          : t("rr.headBackLine", { dist: dist(from.distanceM) })
+      );
+      return;
+    }
+    setNavState((st) => nextNavState(st, "OBSTACLE"));
+    setRerouteMsg(named ? t("rr.newFrom", { name: placeLabel(from.node) }) : t("rr.newHere"));
+    setStart(from.node);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live.pos]);
+
+  const mapYou = useMemo(
+    () =>
+      live.pos && live.pos.accuracyM <= WEAK_FIX_M
+        ? { lat: live.pos.lat, lon: live.pos.lon, accuracyM: live.pos.accuracyM }
+        : null,
+    [live.pos]
   );
 
   /* ─── Gate: User vs Volunteer ─── */
@@ -418,11 +744,12 @@ export default function App() {
           <header className="hero">
             <div className="hero-visual" aria-hidden>
               <div className="path-glow" />
-              <DirectionArrow rotationDeg={18} size={132} />
+              <WalkerIcon size={96} />
             </div>
-            <p className="eyebrow">Nashik Kumbh Mela 2027</p>
-            <h1 className="brand">Kumbh Wayfinding</h1>
+            <p className="eyebrow">{t("gate.eyebrow")}</p>
+            <h1 className="brand">{t("app.name")}</h1>
           </header>
+          <LangPicker />
           <div className="role-cards">
             <button
               type="button"
@@ -436,8 +763,8 @@ export default function App() {
                 <WalkerIcon size={24} />
               </span>
               <span className="role-text">
-                <strong>I am a visitor</strong>
-                <small>Find my way in the mela</small>
+                <strong>{t("gate.visitor")}</strong>
+                <small>{t("gate.visitorHint")}</small>
               </span>
               <ChevronIcon size={20} className="role-chevron" />
             </button>
@@ -453,8 +780,8 @@ export default function App() {
                 <VolunteerIcon size={24} />
               </span>
               <span className="role-text">
-                <strong>I am a volunteer</strong>
-                <small>Register places and walk lanes</small>
+                <strong>{t("gate.volunteer")}</strong>
+                <small>{t("gate.volunteerHint")}</small>
               </span>
               <ChevronIcon size={20} className="role-chevron" />
             </button>
@@ -464,19 +791,89 @@ export default function App() {
     );
   }
 
+  /** New app version waiting — shown only on calm screens, never mid-walk. */
+  const updateBanner = updateReady ? (
+    <div className="update-banner" role="status">
+      <span>{t("update.ready")}</span>
+      <button type="button" className="btn soft" onClick={() => void updateServiceWorker(true)}>
+        {t("update.reload")}
+      </button>
+    </div>
+  ) : null;
+
   /* ─── Volunteer window ─── */
+  if (mode === "volunteer" && !auth && !authLost) {
+    return (
+      <div className="app">
+        <div className="atmosphere" aria-hidden />
+        <VolunteerLogin apiBase={API} onSignedIn={setAuth} onBack={() => setMode("gate")} />
+      </div>
+    );
+  }
+
   if (mode === "volunteer") {
     return (
       <div className="app">
         <div className="atmosphere" aria-hidden />
+        {volStep === "home" && updateBanner}
+        {simOn && LazySimulationPanel && (
+          <Suspense fallback={null}>
+            <LazySimulationPanel
+              start={RAMKUND_CENTER}
+              route={[]}
+              routeKey=""
+              places={registeredPlaces}
+              picking={false}
+              onPickingChange={() => {}}
+              onProvider={setSimProvider}
+              routeTo={volunteerRouteTo}
+            />
+          </Suspense>
+        )}
+        {!auth && (
+          <VolunteerLogin
+            apiBase={API}
+            overlay
+            onSignedIn={(a) => {
+              setAuth(a);
+              setAuthLost(false);
+            }}
+            onBack={() => {
+              setAuthLost(false);
+              setMode("gate");
+            }}
+          />
+        )}
 
         {volStep === "home" && (
           <section className="screen flow">
             <TopBar
-              title="Volunteer"
-              subtitle="Register Kumbh places and walk each mela lane once"
+              title={t("vol.home.title")}
+              subtitle={t("vol.home.subtitle")}
               onBack={() => setMode("gate")}
             />
+            <LangPicker compact />
+            {auth && (
+              <p className="volunteer-who">
+                <span>
+                  {t(auth.volunteer.role === "admin" ? "vol.home.signedInAdmin" : "vol.home.signedInAs", {
+                    name: auth.volunteer.name,
+                  })}
+                </span>
+                <button
+                  type="button"
+                  className="btn soft"
+                  onClick={() => {
+                    void logout(API);
+                    setAuth(null);
+                    setMode("gate");
+                  }}
+                >
+                  {t("vol.home.signOut")}
+                </button>
+              </p>
+            )}
+            <VolunteerOutbox apiBase={API} volunteerId={auth?.volunteer.id ?? null} />
             <div className="action-list">
               <button
                 type="button"
@@ -487,8 +884,8 @@ export default function App() {
                   <PinPlusIcon />
                 </span>
                 <span className="action-text">
-                  <strong>Register a mela place</strong>
-                  <small>Add a board with its coordinates and walked lane</small>
+                  <strong>{t("vol.home.register")}</strong>
+                  <small>{t("vol.home.registerHint")}</small>
                 </span>
                 <ChevronIcon size={20} className="action-chevron" />
               </button>
@@ -501,8 +898,8 @@ export default function App() {
                   <CompassIcon />
                 </span>
                 <span className="action-text">
-                  <strong>Fix walk direction</strong>
-                  <small>Point the phone along a lane between two boards</small>
+                  <strong>{t("vol.home.heading")}</strong>
+                  <small>{t("vol.home.headingHint")}</small>
                 </span>
                 <ChevronIcon size={20} className="action-chevron" />
               </button>
@@ -515,29 +912,27 @@ export default function App() {
                   <BlockIcon />
                 </span>
                 <span className="action-text">
-                  <strong>Report a blocked lane</strong>
-                  <small>Barricade, crowd or closed gate on a lane</small>
+                  <strong>{t("vol.home.obstacle")}</strong>
+                  <small>{t("vol.home.obstacleHint")}</small>
                 </span>
                 <ChevronIcon size={20} className="action-chevron" />
               </button>
-            </div>
-
-            <div className="share-card">
-              <QRCodeSVG
-                value={volunteerRegisterLink(phoneOrigin)}
-                size={132}
-                level="M"
-                includeMargin
-                bgColor="#ffffff"
-                fgColor="#14201c"
-              />
-              <div>
-                <strong>Open on another phone</strong>
-                <p>Scan to open volunteer registration.</p>
-                <p className="volunteer-phone-url">
-                  {volunteerRegisterLink(phoneOrigin)}
-                </p>
-              </div>
+              {auth?.volunteer.role === "admin" && (
+                <button
+                  type="button"
+                  className="action-card"
+                  onClick={() => setVolStep("admin")}
+                >
+                  <span className="action-icon">
+                    <PlaceIcon type="landmark" />
+                  </span>
+                  <span className="action-text">
+                    <strong>{t("vol.home.admin")}</strong>
+                    <small>{t("vol.home.adminHint")}</small>
+                  </span>
+                  <ChevronIcon size={20} className="action-chevron" />
+                </button>
+              )}
             </div>
           </section>
         )}
@@ -562,6 +957,18 @@ export default function App() {
           />
         )}
 
+        {volStep === "admin" && (
+          <Suspense fallback={<div className="offline-map-loading" />}>
+            <LazyAdminMap
+              apiBase={API}
+              onBack={() => setVolStep("home")}
+              onSaved={() => {
+                void reloadPack();
+              }}
+            />
+          </Suspense>
+        )}
+
         {volStep === "obstacle" && (
           <VolunteerObstacle
             apiBase={API}
@@ -579,28 +986,38 @@ export default function App() {
   return (
     <div className="app">
       <div className="atmosphere" aria-hidden />
+      {step !== "guide" && updateBanner}
+      {simOn && LazySimulationPanel && (
+        <Suspense fallback={null}>
+          <LazySimulationPanel
+            start={RAMKUND_CENTER}
+            route={routeCoords}
+            routeKey={hasPath ? pathKey : ""}
+            places={registeredPlaces}
+            picking={simPicking}
+            onPickingChange={setSimPicking}
+            onProvider={setSimProvider}
+          />
+        </Suspense>
+      )}
 
       {step === "home" && (
         <section className="screen flow">
           <TopBar
-            title="Find your way"
-            subtitle="Scan the board where you stand, pick a place, follow the arrow"
+            title={t("home.title")}
+            subtitle={t("home.subtitle")}
             onBack={() => setMode("gate")}
-            aside={
-              <span className="topbar-badge" aria-hidden>
-                <DirectionArrow rotationDeg={18} size={44} />
-              </span>
-            }
           />
+          <LangPicker compact />
           <ol className="how-steps">
             <li>
-              <span>1</span>Scan a board
+              <span>1</span>{t("home.step1")}
             </li>
             <li>
-              <span>2</span>Choose a place
+              <span>2</span>{t("home.step2")}
             </li>
             <li>
-              <span>3</span>Follow the arrow
+              <span>3</span>{t("home.step3")}
             </li>
           </ol>
           <div className="action-list">
@@ -613,74 +1030,161 @@ export default function App() {
                 <WalkerIcon />
               </span>
               <span className="action-text">
-                <strong>Find my way</strong>
-                <small>Start from the board where you are</small>
-              </span>
-              <ChevronIcon size={20} className="action-chevron" />
-            </button>
-            <button
-              type="button"
-              className="action-card"
-              onClick={() => setStep("boards")}
-            >
-              <span className="action-icon">
-                <BoardsIcon />
-              </span>
-              <span className="action-text">
-                <strong>Show mela boards</strong>
-                <small>QR codes of every registered place</small>
+                <strong>{t("home.findWay")}</strong>
+                <small>{t("home.findWayHint")}</small>
               </span>
               <ChevronIcon size={20} className="action-chevron" />
             </button>
           </div>
+          <OfflineMapCard />
+          <p className="pack-status">
+            {packSource === "bundled"
+              ? t("pack.sample")
+              : (() => {
+                  const time = formatPackTime(`${lang}-IN`, pack.generated_at, packSavedAt);
+                  const count = registeredPlaces.length;
+                  return time ? t("pack.from", { time, count }) : t("pack.fromPhone", { count });
+                })()}
+          </p>
+          {storageNote && (
+            <p className="pack-status warn" role="status">
+              {storageNote === "full" ? t("pack.storageFull") : t("pack.storageDamaged")}
+            </p>
+          )}
+          {packSource !== "bundled" && (
+            <details className="pack-details">
+              <summary>{t("pack.details")}</summary>
+              <p>{t("pack.detailVersion", { version: pack.version })}</p>
+              {pack.sources?.osm_network && (
+                <p>{t("pack.detailSources", { date: osmSnapshotDate(pack.sources.osm_network) })}</p>
+              )}
+              {packCheckAt && packCheck && (
+                <p>
+                  {t("pack.detailCheck", {
+                    time: formatPackTime(`${lang}-IN`, packCheckAt) ?? "",
+                    result: t(
+                      packCheck.kind === "same"
+                        ? "pack.checkSame"
+                        : packCheck.kind === "newer"
+                          ? "pack.checkNewer"
+                          : packCheck.kind === "unreachable"
+                            ? "pack.checkOffline"
+                            : packCheck.kind === "empty"
+                              ? "pack.checkEmpty"
+                              : "pack.checkServer"
+                    ),
+                  })}
+                </p>
+              )}
+              {persisted !== null && <p>{persisted ? t("pack.persistOn") : t("pack.persistOff")}</p>}
+            </details>
+          )}
+          {/* Why there are no walking routes yet — instead of failing quietly. */}
+          {packSource === "bundled" && packCheck && (
+            <p className="pack-status warn" role="status">
+              {packCheck.kind === "wrong_server"
+                ? t("pack.wrongServer", { status: packCheck.status })
+                : packCheck.kind === "empty"
+                  ? t("pack.empty")
+                  : packCheck.kind === "unreachable"
+                    ? t("pack.offline")
+                    : null}
+            </p>
+          )}
         </section>
-      )}
-
-      {step === "boards" && (
-        <BoardQrGallery
-          nodes={registeredPlaces}
-          onBack={() => setStep("home")}
-          onUseAsStart={(node) => {
-            setStart(node);
-            setStep("destination");
-          }}
-        />
       )}
 
       {step === "start" && (
         <section className="screen flow">
           <TopBar
-            title="Where are you?"
-            subtitle="Scan the board near you, or pick the place below"
+            title={t("start.title")}
+            subtitle={t("start.subtitle")}
             onBack={() => setStep("home")}
           />
-          <button
-            type="button"
-            className="btn primary block"
-            onClick={() => {
-              setScanTarget("start");
-              setShowScanner(true);
+
+          <OfflineMap
+            onMapTap={onSimMapTap}
+            className="pick-map"
+            places={registeredPlaces}
+            you={mapYou}
+            startCode={start?.code}
+            onPlaceTap={(code) => {
+              const n = registeredPlaces.find((p) => p.code === code);
+              if (!n) return;
+              setStart(n);
+              setStep("destination");
             }}
-          >
-            <ScanIcon size={20} /> Scan QR board
-          </button>
-          <button
-            type="button"
-            className="btn secondary block"
-            onClick={() => setStep("boards")}
-          >
-            <BoardsIcon size={20} /> Show mela boards
-          </button>
-          <p className="section-label">Or pick where you are</p>
+          />
+
+          <div className="gps-card" aria-live="polite">
+            {!gpsAllowed ? (
+              <p className="gps-note">
+                {isSecureEnough() ? t("start.noGps") : t("start.needHttps")}
+              </p>
+            ) : startSuggestion.kind === "near" ? (
+              <>
+                <p className="gps-note">
+                  {startSuggestion.candidates.length > 1
+                    ? t("start.nearOne")
+                    : startSuggestion.approximate
+                      ? t("start.probablyNear")
+                      : t("start.near")}
+                  {live.pos && <> · {t("start.gpsAcc", { acc: Math.round(live.pos.accuracyM) })}</>}
+                </p>
+                <div className="place-list">
+                  {startSuggestion.candidates.map(({ node, distanceM }) => (
+                    <button
+                      key={node.code}
+                      type="button"
+                      className="place active"
+                      onClick={() => {
+                        setStart(node);
+                        setStep("destination");
+                      }}
+                    >
+                      <span className={`place-mark ${placeTone(node.node_type)}`}>
+                        <PlaceIcon type={node.node_type} />
+                      </span>
+                      <span className="place-text">
+                        <strong>{placeLabel(node)}</strong>
+                        <small>{t("start.awayTap", { dist: dist(distanceM) })}</small>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : startSuggestion.kind === "far" ? (
+              <p className="gps-note">
+                {t("start.far", {
+                  name: placeLabel(startSuggestion.nearest.node),
+                  dist: dist(startSuggestion.nearest.distanceM),
+                })}
+              </p>
+            ) : (
+              <p className="gps-note">
+                {startSuggestion.reason === "no_places"
+                  ? t("start.noPlaces")
+                  : live.note
+                    ? t(live.note.key, { acc: live.note.acc ?? "" })
+                    : t("start.finding")}
+              </p>
+            )}
+          </div>
+
+          <p className="section-label">
+            {startList.some((p) => p.distanceM != null)
+              ? t("start.allNearest")
+              : t("start.pick")}
+          </p>
           {registeredPlaces.length === 0 ? (
             <div className="empty-state">
               <PinPlusIcon size={28} />
-              <strong>No mela places yet</strong>
-              <p>A volunteer must register a ghat, camp or gate first.</p>
+              <strong>{t("start.emptyTitle")}</strong>
+              <p>{t("start.emptyText")}</p>
             </div>
           ) : (
             <div className="place-list">
-              {registeredPlaces.map((n) => (
+              {startList.map(({ node: n, distanceM }) => (
                 <button
                   key={n.code}
                   type="button"
@@ -694,10 +1198,11 @@ export default function App() {
                     <PlaceIcon type={n.node_type} />
                   </span>
                   <span className="place-text">
-                    <strong>{n.name}</strong>
+                    <strong>{placeLabel(n)}</strong>
                     <small>
-                      {n.local_name ? `${n.local_name} · ` : ""}
-                      {siteCategoryLabel(n.node_type)}
+                      {distanceM != null ? `${dist(distanceM)} · ` : ""}
+                      {placeAltLabel(n) ? `${placeAltLabel(n)} · ` : ""}
+                      {categoryLabel(n.node_type)}
                     </small>
                   </span>
                 </button>
@@ -710,30 +1215,40 @@ export default function App() {
       {step === "destination" && start && (
         <section className="screen flow">
           <TopBar
-            title="Where to?"
-            subtitle="Choose the place you want to reach"
+            title={t("dest.title")}
+            subtitle={t("dest.subtitle")}
             onBack={() => setStep("start")}
+          />
+          <OfflineMap
+            onMapTap={onSimMapTap}
+            className="pick-map"
+            places={registeredPlaces}
+            startCode={start.code}
+            you={mapYou}
+            onPlaceTap={(code) => {
+              const n = destinations.find((p) => p.code === code);
+              if (!n) return;
+              setDest(n);
+              setStep("guide");
+            }}
           />
           <div className="start-chip">
             <span className={`place-mark small ${placeTone(start.node_type)}`}>
               <PlaceIcon type={start.node_type} size={18} />
             </span>
             <span className="start-chip-text">
-              <small>You are at</small>
-              <strong>{start.name}</strong>
+              <small>{t("dest.youAreAt")}</small>
+              <strong>{placeName(start)}</strong>
             </span>
             <button type="button" onClick={() => setStep("start")}>
-              Change
+              {t("dest.change")}
             </button>
           </div>
           {destinations.length === 0 ? (
             <div className="empty-state">
               <PinPlusIcon size={28} />
-              <strong>No other places yet</strong>
-              <p>
-                Volunteers can register ghats, hospitals, parking and camps in
-                Volunteer mode.
-              </p>
+              <strong>{t("dest.emptyTitle")}</strong>
+              <p>{t("dest.emptyText")}</p>
             </div>
           ) : (
             <>
@@ -746,14 +1261,14 @@ export default function App() {
                     className={`filter-chip ${activeArea === a ? "active" : ""}`}
                     onClick={() => setAreaFilter(a)}
                   >
-                    {a === "all" ? "All locations" : a}
+                    {a === "all" ? t("dest.allLocations") : t(`area.${a}`)}
                   </button>
                 ))}
               </div>
             )}
             {destinationCategories.length > 1 && (
               <div className="filter-row" role="group" aria-label="Category">
-                {[{ id: "all", label: "All places" }, ...destinationCategories].map(
+                {[{ id: "all" }, ...destinationCategories].map(
                   (c) => (
                     <button
                       key={c.id}
@@ -761,7 +1276,7 @@ export default function App() {
                       className={`filter-chip ${activeCategory === c.id ? "active" : ""}`}
                       onClick={() => setCategoryFilter(c.id)}
                     >
-                      {c.label}
+                      {c.id === "all" ? t("dest.allPlaces") : t(`cat.${c.id}` as MessageKey)}
                     </button>
                   )
                 )}
@@ -769,7 +1284,7 @@ export default function App() {
             )}
             {filteredDestinations.length === 0 && (
               <div className="empty-state">
-                <strong>No places match these filters</strong>
+                <strong>{t("dest.noMatch")}</strong>
               </div>
             )}
             <div className="dest-grid">
@@ -781,7 +1296,6 @@ export default function App() {
                   onClick={() => {
                     setDest(n);
                     setStep("guide");
-                    heading.requestPermission();
                   }}
                 >
                   <span className="dest-top">
@@ -790,13 +1304,13 @@ export default function App() {
                     </span>
                     {officialPlaceFor(n)?.zone && (
                       <span className="zone-badge">
-                        Zone {officialPlaceFor(n)?.zone}
+                        {t("dest.zone", { zone: officialPlaceFor(n)?.zone ?? "" })}
                       </span>
                     )}
                   </span>
-                  <strong>{n.name}</strong>
-                  {n.local_name && <span className="dest-local">{n.local_name}</span>}
-                  <small>{siteCategoryLabel(n.node_type)}</small>
+                  <strong>{placeLabel(n)}</strong>
+                  {placeAltLabel(n) && <span className="dest-local">{placeAltLabel(n)}</span>}
+                  <small>{categoryLabel(n.node_type)}</small>
                 </button>
               ))}
             </div>
@@ -808,8 +1322,8 @@ export default function App() {
       {step === "guide" && start && dest && arrived && (
         <section className="screen guide">
           <TopBar
-            title={dest.name}
-            subtitle="Navigation finished"
+            title={placeLabel(dest)}
+            subtitle={t("arr.finished")}
             onBack={() => setStep("destination")}
             light
           />
@@ -817,12 +1331,8 @@ export default function App() {
             <span className="status-orb ok" aria-hidden>
               ✓
             </span>
-            <h3 className="status-title">You have arrived</h3>
-            <p className="fine">
-              {scannedArrived
-                ? "Destination board scanned."
-                : "You are on the final lane, within about 2 m of the board."}
-            </p>
+            <h3 className="status-title">{t("arr.title")}</h3>
+            <p className="fine">{startIsDest ? t("arr.atDest") : t("arr.finalLane")}</p>
             <button
               type="button"
               className="btn primary wide"
@@ -832,7 +1342,7 @@ export default function App() {
                 setDest(null);
               }}
             >
-              Done
+              {t("arr.done")}
             </button>
           </div>
         </section>
@@ -841,8 +1351,8 @@ export default function App() {
       {step === "guide" && start && dest && route && !hasPath && !arrived && (
         <section className="screen guide">
           <TopBar
-            title={dest.name}
-            subtitle={`From ${start.name}`}
+            title={placeLabel(dest)}
+            subtitle={t("nr.from", { name: placeName(start) })}
             onBack={() => setStep("destination")}
             light
           />
@@ -850,34 +1360,27 @@ export default function App() {
             <span className="status-orb warn" aria-hidden>
               <BlockIcon size={30} />
             </span>
-            <h3 className="status-title">No walked lane yet</h3>
+            <h3 className="status-title">{t("nr.title")}</h3>
             <p className="fine">
-              {route.reason ||
-                routeValidation?.errors?.[0] ||
-                "Please move to the nearest marked pathway, or ask a volunteer to open a walk link / clear an obstacle."}
+              {packSource === "bundled" ? t("nr.noData") : t("nr.unreachable")}
             </p>
             <div className="far-advice">
               <p className="far-distance">
-                {(() => {
-                  const m = haversineM(start.lat, start.lon, dest.lat, dest.lon);
-                  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
-                })()}
-                <small>away in a straight line</small>
+                {dist(haversineM(start.lat, start.lon, dest.lat, dest.lon))}
+                <small>{t("nr.straight")}</small>
               </p>
               {officialPlaceFor(dest) && (
                 <p className="far-tip">{officialPlaceFor(dest)?.getThere}</p>
               )}
-              <p className="far-tip">Ask a volunteer or follow the mela signboards.</p>
-              <p className="far-note">
-                Guidance only — follow official signs and police instructions.
-              </p>
+              <p className="far-tip">{t("nr.ask")}</p>
+              <p className="far-note">{t("nr.guidance")}</p>
             </div>
             <button
               type="button"
               className="btn primary wide"
               onClick={() => setStep("destination")}
             >
-              Pick another place
+              {t("nr.pickAnother")}
             </button>
             {sessionBlocked.size > 0 && (
               <button
@@ -888,160 +1391,87 @@ export default function App() {
                   setNavState("ROUTING");
                 }}
               >
-                Clear temporary blocks & retry
+                {t("nr.clearBlocks")}
               </button>
             )}
           </div>
         </section>
       )}
 
-      {step === "guide" && start && dest && route && hasPath && !arrived && guideView === "camera" && (
-        <ArGuide
-          arrowDeg={arrowDeg}
-          nextName={nextOnPath?.name ?? dest.name}
-          distanceM={legDistanceM}
-          destName={dest.name}
-          arrived={arrived}
-          sensorLive={heading.live}
-          sensorNote={heading.note}
-          pathHint={pathInstructions[0]?.text ?? null}
-          onScan={handleArScan}
-          onNudge={heading.nudge}
-          onExit={() => setStep("destination")}
-          onUseCompass={() => setGuideView("compass")}
-          onPathBlocked={reportPathBlocked}
-        />
-      )}
-
-      {step === "guide" && start && dest && route && hasPath && !arrived && guideView === "compass" && (
-        <section className="screen guide">
+      {step === "guide" && start && dest && route && hasPath && !arrived && (
+        <section className="screen flow map-guide">
           <TopBar
-            title={dest.name}
-            subtitle={`${Math.round(route.totalDistanceM)} m · ${navState}`}
+            title={placeLabel(dest)}
+            subtitle={`${t("guide.toGo", { dist: dist(remainingM) })} · ${t("guide.eta", {
+              min: walkMinutes(remainingM),
+            })}${navState === "REROUTING" ? t("guide.rerouting") : ""}`}
             onBack={() => setStep("destination")}
-            light
           />
 
-          <div className="guide-stage">
-            <p className="follow">
-              {pathInstructions[0]?.text ?? "Follow the arrow"}
+          <OfflineMap
+            onMapTap={onSimMapTap}
+            className="guide-map"
+            places={registeredPlaces}
+            route={routeCoords}
+            mapRoads={routeMapRoads}
+            startCode={start.code}
+            destCode={dest.code}
+            you={mapYou}
+            followYou
+          />
+
+          <div className="guide-card">
+            <p className="guide-now">{guideNow}</p>
+            <p className="guide-next">
+              {t("guide.next")} <strong>{placeLabel(nextNamed ?? dest)}</strong>
+              {toNextM + laterToNamedM > 0 && <> · {dist(toNextM + laterToNamedM)}</>}
             </p>
-            <DirectionArrow rotationDeg={arrowDeg} size={240} />
-            <p className="next-line">
-              Next: <strong>{nextOnPath?.name}</strong>
+            {usesMapRoads && (
+              <p className="guide-gps warn">{t("guide.mapRoads")}</p>
+            )}
+            <p className="guide-gps">
+              {simOn ? "[SIM] " : ""}
+              {!mapYou && !gpsAllowed
+                ? t("guide.locOff")
+                : live.note
+                  ? t(live.note.key, { acc: live.note.acc ?? "" })
+                  : t("start.finding")}
             </p>
-            <p className="sensor-line">
-              {heading.live ? "●" : "○"} {heading.note} ·{" "}
-              {Math.round(heading.heading)}°
-              {pathWalkHeading != null
-                ? " · path walk"
-                : " · GPS line (set walk direction)"}
-            </p>
+            {rerouteMsg && <p className="guide-gps warn">{rerouteMsg}</p>}
+            {gpsMsg && <p className="guide-gps warn">{gpsMsg}</p>}
+            <div className="guide-actions">
+              <button type="button" className="btn primary" onClick={updatePositionFromGps}>
+                {t("guide.reached")}
+              </button>
+              <button type="button" className="btn soft" onClick={reportPathBlocked}>
+                {t("guide.blocked")}
+              </button>
+            </div>
           </div>
 
-          <div className="route-panel">
-            <p className="section-label light">Turn-by-turn (walkable path)</p>
+          <details className="guide-steps">
+            <summary>{t("guide.allDirections", { n: pathInstructions.length })}</summary>
             <ol className="route-steps">
-              {pathInstructions.map((ins, i) => (
-                <li key={`${ins.text}-${i}`}>
-                  <span className="dot" />
-                  <div>
-                    <strong>{ins.text}</strong>
-                    {ins.detail && <small>{ins.detail}</small>}
-                  </div>
-                </li>
-              ))}
-            </ol>
-            <p className="section-label light">Boards on route</p>
-            <ol className="route-steps">
-              {route.nodes.map((n, i) => {
-                const edge =
-                  i < route.nodes.length - 1
-                    ? edgeBetween(
-                        pack.edges,
-                        route.codes[i],
-                        route.codes[i + 1]
-                      )
-                    : null;
+              {pathInstructions.map((ins, i) => {
+                const line = instructionLines(lang, ins, (code) => {
+                  const n = pack.nodes.find((x) => x.code === code);
+                  return n ? placeName(n) : code;
+                });
                 return (
-                  <li key={n.code}>
+                  <li key={`${ins.text}-${i}`}>
                     <span className="dot" />
                     <div>
-                      <strong>
-                        {i === 0
-                          ? "You are here — "
-                          : i === route.nodes.length - 1
-                            ? "Destination — "
-                            : ""}
-                        {n.name}
-                      </strong>
-                      {edge && (
-                        <small>
-                          then {Math.round(edge.distance_m)} m · {edge.surface}
-                          {edge.door_state && edge.door_state !== "none"
-                            ? ` · door ${edge.door_state}`
-                            : ""}
-                        </small>
-                      )}
+                      <strong>{line.text}</strong>
+                      {line.detail && <small>{line.detail}</small>}
                     </div>
                   </li>
                 );
               })}
             </ol>
-
-            <div className="guide-actions">
-              <button
-                type="button"
-                className="btn soft"
-                onClick={reportPathBlocked}
-              >
-                Path blocked — reroute
-              </button>
-              <button
-                type="button"
-                className="btn soft"
-                onClick={() => setGuideView("camera")}
-              >
-                Camera view
-              </button>
-              <button
-                type="button"
-                className="btn soft"
-                onClick={() => {
-                  setScanTarget("reanchor");
-                  setShowScanner(true);
-                }}
-              >
-                Rescan board
-              </button>
-              <button
-                type="button"
-                className="btn soft"
-                onClick={() => heading.nudge(-20)}
-              >
-                Turn left
-              </button>
-              <button
-                type="button"
-                className="btn soft"
-                onClick={() => heading.nudge(20)}
-              >
-                Turn right
-              </button>
-            </div>
-          </div>
+          </details>
         </section>
       )}
 
-      {showScanner && (
-        <QrScanner
-          onClose={() => setShowScanner(false)}
-          onScan={handleUserScan}
-          demoCodes={demoCodes}
-          title="Scan a Kumbh board"
-          helpText="Scan a ghat, akhara, camp, or gate board. This is not the volunteer QR."
-        />
-      )}
     </div>
   );
 }
@@ -1060,9 +1490,10 @@ function TopBar({
   /** Small element on the right of the title, e.g. a badge. */
   aside?: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div className={`topbar ${light ? "light" : ""}`}>
-      <button type="button" className="back" onClick={onBack} aria-label="Back">
+      <button type="button" className="back" onClick={onBack} aria-label={t("app.back")}>
         ←
       </button>
       <div className="topbar-text">

@@ -1,0 +1,14 @@
+{
+  "elements": [
+    {"type": "way", "id": 1, "nodes": [1, 2, 3], "tags": {"highway": "residential", "name": "MG Road"},
+     "geometry": [{"lat": 20.0050, "lon": 73.7895}, {"lat": 20.0050, "lon": 73.7905}, {"lat": 20.0050, "lon": 73.7915}]},
+    {"type": "way", "id": 2, "nodes": [2, 4], "tags": {"highway": "footway"},
+     "geometry": [{"lat": 20.0050, "lon": 73.7905}, {"lat": 20.0060, "lon": 73.7905}]},
+    {"type": "way", "id": 3, "nodes": [3, 5], "tags": {"highway": "motorway"},
+     "geometry": [{"lat": 20.0050, "lon": 73.7915}, {"lat": 20.0050, "lon": 73.7925}]},
+    {"type": "way", "id": 4, "nodes": [4, 6], "tags": {"highway": "service", "access": "private"},
+     "geometry": [{"lat": 20.0060, "lon": 73.7905}, {"lat": 20.0070, "lon": 73.7905}]},
+    {"type": "way", "id": 5, "nodes": [4, 7], "tags": {"highway": "steps"},
+     "geometry": [{"lat": 20.0060, "lon": 73.7905}, {"lat": 20.0060, "lon": 73.7915}]}
+  ]
+}

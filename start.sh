@@ -12,6 +12,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
+# Ports: BACKEND_PORT / FRONTEND_PORT if set, else 8000 / 5173. A port held by
+# another program is never stopped: the backend moves to the next free port,
+# and the frontend asks you to choose one (see choose_ports below).
+BACKEND_PORT_SET="${BACKEND_PORT:-}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 LOG_DIR="$ROOT/.run-logs"
@@ -36,6 +40,78 @@ NC=$'\033[0m'
 info()  { echo "${CYAN}->${NC} $*"; }
 ok()    { echo "${GREEN}OK${NC} $*"; }
 fail()  { echo "${RED}ERROR${NC} $*"; exit 1; }
+
+# True if anything listens on the port (any user — even ones we cannot stop).
+port_in_use() {
+  ss -tln 2>/dev/null | grep -qE "[:.]${1}[[:space:]]"
+}
+
+# True if our Setu backend answers on the port.
+is_setu_backend() {
+  local port="$1" body
+  body="$(curl -sk --connect-timeout 2 "https://127.0.0.1:${port}/health" 2>/dev/null || true)"
+  [[ "$body" == *'"service":"setu"'* ]] && return 0
+  body="$(curl -s --connect-timeout 2 "http://127.0.0.1:${port}/health" 2>/dev/null || true)"
+  [[ "$body" == *'"service":"setu"'* ]]
+}
+
+# True if our frontend (Vite dev server of this app) answers on the port.
+is_setu_frontend() {
+  local port="$1" body
+  body="$(curl -sk --connect-timeout 2 "https://127.0.0.1:${port}/" 2>/dev/null || true)"
+  [[ "$body" == *"<title>Kumbh Wayfinding</title>"* ]] && return 0
+  body="$(curl -s --connect-timeout 2 "http://127.0.0.1:${port}/" 2>/dev/null || true)"
+  [[ "$body" == *"<title>Kumbh Wayfinding</title>"* ]]
+}
+
+# Stop a server this script started (pid file), if that process is still ours —
+# also when it hangs and no longer answers on its port.
+stop_pidfile() {
+  local file="$1" pattern="$2" pid
+  [[ -f "$file" ]] || return 0
+  pid="$(cat "$file" 2>/dev/null || true)"
+  rm -f "$file"
+  [[ -n "$pid" ]] || return 0
+  if ps -p "$pid" -o args= 2>/dev/null | grep -qE "$pattern"; then
+    pkill -TERM -P "$pid" 2>/dev/null || true  # npm's child (vite)
+    kill "$pid" 2>/dev/null || true
+  fi
+}
+
+# Stop what listens on the port — only when it is ours (an old run of this app).
+stop_if_ours() {
+  local port="$1" kind="$2"
+  port_in_use "$port" || return 0
+  if [[ "$kind" == "backend" ]] && ! is_setu_backend "$port"; then return 0; fi
+  if [[ "$kind" == "frontend" ]] && ! is_setu_frontend "$port"; then return 0; fi
+  kill_port "$port"
+}
+
+# Pick the ports. Another program on 8000 (e.g. a Docker container) used to
+# make every /api call reach that program → 404 → no routes (see
+# docs/MISSING_ROUTE_ROOT_CAUSE.md).
+choose_ports() {
+  if port_in_use "$BACKEND_PORT" && ! is_setu_backend "$BACKEND_PORT"; then
+    if [[ -n "$BACKEND_PORT_SET" ]]; then
+      fail "Port ${BACKEND_PORT} is used by another program. Choose another: BACKEND_PORT=8010 ./start.sh"
+    fi
+    local p
+    for p in 8010 8011 8012 8013 8014 8015 8016 8017 8018 8019 8020; do
+      if ! port_in_use "$p" || is_setu_backend "$p"; then
+        info "Port ${BACKEND_PORT} is used by another program — backend will use ${p}"
+        BACKEND_PORT="$p"
+        break
+      fi
+    done
+    port_in_use "$BACKEND_PORT" && ! is_setu_backend "$BACKEND_PORT" \
+      && fail "No free port for the backend (tried 8000, 8010–8020). Set BACKEND_PORT=…"
+  fi
+  if port_in_use "$FRONTEND_PORT" && ! is_setu_frontend "$FRONTEND_PORT"; then
+    fail "Port ${FRONTEND_PORT} is used by another program. Choose another: FRONTEND_PORT=5180 ./start.sh"
+  fi
+  # vite.config.ts proxies /api to this port.
+  export SETU_BACKEND_PORT="${BACKEND_PORT}"
+}
 
 kill_port() {
   local port="$1"
@@ -82,8 +158,10 @@ cleanup() {
   echo
   info "Stopping Routefinding..."
   stop_ngrok
-  kill_port "${BACKEND_PORT}"
-  kill_port "${FRONTEND_PORT}"
+  stop_pidfile "${LOG_DIR}/backend.pid" "uvicorn"
+  stop_pidfile "${LOG_DIR}/frontend.pid" "npm|vite|node"
+  stop_if_ours "${BACKEND_PORT}" backend
+  stop_if_ours "${FRONTEND_PORT}" frontend
   rm -f "$LOCK_FILE" "$PUBLIC_URL_FILE"
   ok "Stopped."
   exit 0
@@ -244,38 +322,86 @@ npm install >/dev/null
 ok "Frontend packages installed"
 
 stop_ngrok
-kill_port "${BACKEND_PORT}"
-kill_port "${FRONTEND_PORT}"
+# A previous run that was not stopped cleanly (hung server still on the port).
+stop_pidfile "${LOG_DIR}/backend.pid" "uvicorn"
+stop_pidfile "${LOG_DIR}/frontend.pid" "npm|vite|node"
+choose_ports
+stop_if_ours "${BACKEND_PORT}" backend
+stop_if_ours "${FRONTEND_PORT}" frontend
 
-info "Starting backend on :${BACKEND_PORT} ..."
 cd "$ROOT/backend"
 export USE_SQLITE=1
 export PACK_DIR="$ROOT/backend/data/packs"
+
+# Without places and lanes the app can only show "No walked lane yet". On the
+# first run build the Nashik pilot dataset from OpenStreetMap (saved copies in
+# backend/data/osm/ are used when present, or when Overpass is unreachable).
+if [[ "${SETU_SKIP_DATASET:-0}" != "1" ]]; then
+  counts="$(.venv/bin/python -c 'from app.db import init_db, SessionLocal, QrNode, Edge; init_db(); db = SessionLocal(); osm = db.query(Edge).filter(Edge.source == "osm"); print(db.query(QrNode).count(), db.query(Edge).count(), osm.count(), osm.filter(Edge.passage_kind == "bridge").count())' 2>/dev/null || echo "? ? ? ?")"
+  read -r place_count lane_count osm_lanes osm_bridges <<<"$counts"
+  dataset_kind=""
+  if [[ "$place_count" == "0" ]]; then
+    dataset_kind="all"      # nothing yet: places, water, then streets
+  elif [[ "$lane_count" == "0" ]]; then
+    dataset_kind="network"  # places but no lanes (e.g. an earlier street import failed)
+  elif [[ "$osm_lanes" != "0" && "$osm_bridges" == "0" ]]; then
+    # Streets imported before the river safety checks: re-import them so
+    # bridges are marked and unbridged river crossings are left out.
+    dataset_kind="network"
+  fi
+  if [[ -n "$dataset_kind" ]]; then
+    info "Building the Nashik pilot dataset (${dataset_kind}, OpenStreetMap, with river safety checks)..."
+    saved_flag=""
+    if ls data/osm/places-*.json >/dev/null 2>&1 && ls data/osm/network-*.json >/dev/null 2>&1 \
+      && ls data/osm/water-*.json >/dev/null 2>&1; then
+      saved_flag="--saved"
+    else
+      info "Downloading from OpenStreetMap (Overpass) — this can take a few minutes when it is busy."
+    fi
+    if .venv/bin/python scripts/import_osm.py "${dataset_kind}" ${saved_flag} >"${LOG_DIR}/dataset.log" 2>&1; then
+      ok "Nashik dataset ready ($(grep -E '^Pack ' "${LOG_DIR}/dataset.log" | tail -1))"
+    else
+      echo "${RED}Warning:${NC} dataset build failed — see ${LOG_DIR}/dataset.log (routes will be missing)"
+    fi
+  else
+    ok "Nashik data ready (${lane_count} lanes in the database)"
+  fi
+fi
+
+info "Starting backend on :${BACKEND_PORT} ..."
 export PUBLIC_URL_FILE
 SSL_ARGS=()
 if [[ "$SCHEME" == "https" ]]; then
   SSL_ARGS=(--ssl-keyfile "$KEY_FILE" --ssl-certfile "$CRT_FILE")
 fi
+# The Vite proxy (IPv6, so ::ffff:127.0.0.1) passes the phone's IP on: trust it.
 nohup "$ROOT/backend/.venv/bin/uvicorn" app.main:app \
   --host 0.0.0.0 --port "${BACKEND_PORT}" "${SSL_ARGS[@]}" \
+  --forwarded-allow-ips "127.0.0.1,::1,::ffff:127.0.0.1" \
   >"${LOG_DIR}/backend.log" 2>&1 &
 echo $! >"${LOG_DIR}/backend.pid"
 
-info "Starting frontend on :${FRONTEND_PORT} ..."
-cd "$ROOT/frontend"
+# Phones (local network or the ngrok tunnel) get a production build served by
+# `vite preview`, which serves only the built files. The Vite *dev* server has
+# known advisories (a path traversal could read files on this computer, such
+# as backend/.env or the database), so it runs only with FRONTEND_MODE=dev,
+# bound to this computer, and is never tunnelled.
+FRONTEND_MODE="${FRONTEND_MODE:-preview}"
+if [[ "$FRONTEND_MODE" == "dev" && "$USE_TUNNEL" == "1" ]]; then
+  echo "${RED}Note:${NC} FRONTEND_MODE=dev serves this computer only — no tunnel, no phones."
+  USE_TUNNEL=0
+fi
 if [[ "$SCHEME" == "https" ]]; then
   export SETU_HTTP=0
 else
   export SETU_HTTP=1
 fi
-nohup npm run dev -- --host 0.0.0.0 --port "${FRONTEND_PORT}" \
-  >"${LOG_DIR}/frontend.log" 2>&1 &
-echo $! >"${LOG_DIR}/frontend.pid"
 
 info "Waiting for backend..."
 backend_ok=0
 for _ in $(seq 1 40); do
-  if port_alive "${BACKEND_PORT}"; then
+  # Our backend, not merely something on the port.
+  if is_setu_backend "${BACKEND_PORT}"; then
     ok "Backend ready"
     backend_ok=1
     break
@@ -284,22 +410,11 @@ for _ in $(seq 1 40); do
 done
 [[ "${backend_ok}" -eq 1 ]] || fail "Backend did not start. See ${LOG_DIR}/backend.log"
 
-info "Waiting for frontend..."
-frontend_ok=0
-for _ in $(seq 1 50); do
-  if port_alive "${FRONTEND_PORT}"; then
-    ok "Frontend ready"
-    frontend_ok=1
-    break
-  fi
-  sleep 0.5
-done
-[[ "${frontend_ok}" -eq 1 ]] || fail "Frontend did not start. See ${LOG_DIR}/frontend.log"
-
 PHONE_URL="${SCHEME}://${LAN_IP}:${FRONTEND_PORT}"
 rm -f "$PUBLIC_URL_FILE"
 
-# Trusted HTTPS for phones (GPS autofill). Self-signed LAN cert is never a padlock.
+# Trusted HTTPS for phones (GPS needs a real padlock). The tunnel starts first
+# so the build below knows its public link.
 if command -v ngrok >/dev/null 2>&1 && [[ "$USE_TUNNEL" == "1" ]]; then
   info "Starting trusted HTTPS tunnel (ngrok) for phone GPS..."
   stop_ngrok
@@ -327,38 +442,47 @@ for t in d.get("tunnels") or []:
   if [[ -n "${TUNNEL_URL}" ]]; then
     PHONE_URL="${TUNNEL_URL}"
     printf '%s\n' "${TUNNEL_URL}" >"$PUBLIC_URL_FILE"
-    cat >"$ROOT/frontend/.env.local" <<EOF
-VITE_PHONE_ORIGIN=${TUNNEL_URL}
-EOF
     ok "Trusted phone URL: ${TUNNEL_URL}"
-    # Reload Vite so Volunteer QR embeds the tunnel link
-    kill_port "${FRONTEND_PORT}"
-    cd "$ROOT/frontend"
-    if [[ "$SCHEME" == "https" ]]; then
-      export SETU_HTTP=0
-    else
-      export SETU_HTTP=1
-    fi
-    nohup npm run dev -- --host 0.0.0.0 --port "${FRONTEND_PORT}" \
-      >"${LOG_DIR}/frontend.log" 2>&1 &
-    echo $! >"${LOG_DIR}/frontend.pid"
-    for _ in $(seq 1 40); do
-      port_alive "${FRONTEND_PORT}" && break
-      sleep 0.4
-    done
   else
     echo "${RED}Warning:${NC} ngrok started but no public URL — see ${LOG_DIR}/ngrok.log"
     echo "  Phone GPS will not autofill on LAN self-signed HTTPS."
   fi
-else
-  cat >"$ROOT/frontend/.env.local" <<EOF
-VITE_PHONE_ORIGIN=${PHONE_URL}
-EOF
-  if [[ "$USE_TUNNEL" == "1" ]]; then
-    echo "${RED}Warning:${NC} ngrok not installed — phone GPS needs a trusted HTTPS URL."
-    echo "  Install: https://ngrok.com/download"
-  fi
+elif [[ "$USE_TUNNEL" == "1" ]]; then
+  echo "${RED}Warning:${NC} ngrok not installed — phone GPS needs a trusted HTTPS URL."
+  echo "  Install: https://ngrok.com/download"
 fi
+# Older runs wrote the phone link here; the app no longer reads it.
+rm -f "$ROOT/frontend/.env.local"
+
+cd "$ROOT/frontend"
+if [[ "$FRONTEND_MODE" == "dev" ]]; then
+  info "Starting the Vite dev server on this computer only (:${FRONTEND_PORT}) ..."
+  PHONE_URL="(none — FRONTEND_MODE=dev serves this computer only)"
+  nohup npm run dev -- --host 127.0.0.1 --port "${FRONTEND_PORT}" --strictPort \
+    >"${LOG_DIR}/frontend.log" 2>&1 &
+else
+  # A test build: ?sim=1 (Nashik simulation) stays available for testing
+  # from outside Nashik. Never use such a build for the public site.
+  info "Building the app (about 10 s) ..."
+  VITE_ENABLE_SIMULATION=1 npm run build >"${LOG_DIR}/frontend-build.log" 2>&1 \
+    || fail "Build failed. See ${LOG_DIR}/frontend-build.log"
+  info "Serving the build on :${FRONTEND_PORT} ..."
+  nohup npx vite preview --host 0.0.0.0 --port "${FRONTEND_PORT}" --strictPort \
+    >"${LOG_DIR}/frontend.log" 2>&1 &
+fi
+echo $! >"${LOG_DIR}/frontend.pid"
+
+info "Waiting for frontend..."
+frontend_ok=0
+for _ in $(seq 1 50); do
+  if port_alive "${FRONTEND_PORT}"; then
+    ok "Frontend ready"
+    frontend_ok=1
+    break
+  fi
+  sleep 0.5
+done
+[[ "${frontend_ok}" -eq 1 ]] || fail "Frontend did not start. See ${LOG_DIR}/frontend.log"
 
 echo
 echo "${BOLD}${GREEN}Routefinding is running${NC}"
@@ -371,7 +495,7 @@ echo "  ${BOLD}Volunteer link:${NC} ${GREEN}${PHONE_URL}/?mode=volunteer&registe
 echo
 if [[ "${PHONE_URL}" == *ngrok* ]]; then
   echo "  This has a ${BOLD}real HTTPS padlock${NC} — allow Location and GPS autofills."
-  echo "  Hard-refresh Volunteer on the PC, then scan the QR (or open the link on the phone)."
+  echo "  Open the link on the phone (allow Location)."
   echo "  If ngrok shows a splash page, tap ${BOLD}Visit Site${NC}."
   echo
 else
@@ -389,7 +513,7 @@ backend_was_up=1
 frontend_was_up=1
 while true; do
   sleep 10
-  if port_alive "${BACKEND_PORT}"; then
+  if is_setu_backend "${BACKEND_PORT}"; then
     if [[ "${backend_was_up}" -eq 0 ]]; then
       ok "Backend is responding again"
       backend_was_up=1

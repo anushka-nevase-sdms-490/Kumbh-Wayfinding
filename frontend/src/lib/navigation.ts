@@ -1,5 +1,5 @@
 /**
- * Offline navigation state machine for QR-board wayfinding.
+ * Offline navigation state machine for GPS map wayfinding.
  *
  * IDLE → ROUTING → NAVIGATING ⇄ REROUTING → ARRIVED | NO_ROUTE
  */
@@ -12,18 +12,19 @@ export type NavState =
   | "ARRIVED"
   | "NO_ROUTE";
 
-export const DEFAULT_DESTINATION_RADIUS_M = 2;
+/** GPS is ±5–20 m outdoors, so "arrived" means within about 20 m. */
+export const DEFAULT_DESTINATION_RADIUS_M = 20;
 
 export type ArrivalCheck = {
   arrived: boolean;
-  reason?: "scanned" | "proximity" | "same_board";
+  reason?: "proximity" | "same_board";
 };
 
 /**
  * Arrival only if:
- * - scanned destination board, OR
+ * - the start place is the destination, OR
  * - on final navigable leg AND GPS within radius AND destination still graph-reachable
- *   from the last scanned board (prevents “through the wall” false arrival).
+ *   from the current place (prevents “through the wall” false arrival).
  */
 export function evaluateArrival(args: {
   startCode: string | null | undefined;
@@ -43,12 +44,12 @@ export function evaluateArrival(args: {
     distanceToDestM,
     destinationRadiusM = DEFAULT_DESTINATION_RADIUS_M,
     gpsAccuracyM = null,
-    maxAccuracyM = 20,
+    maxAccuracyM = 25,
   } = args;
 
   if (!startCode || !destCode) return { arrived: false };
   if (startCode.toUpperCase() === destCode.toUpperCase()) {
-    return { arrived: true, reason: "scanned" };
+    return { arrived: true, reason: "same_board" };
   }
   if (!onFinalLeg || !destReachable) return { arrived: false };
   if (distanceToDestM == null) return { arrived: false };
@@ -79,7 +80,10 @@ export function nextNavState(
     case "START_ROUTE":
       return "ROUTING";
     case "ROUTE_OK":
-      return current === "REROUTING" || current === "ROUTING"
+      // NO_ROUTE recovers too: a pack reload can reopen a blocked lane.
+      return current === "REROUTING" ||
+        current === "ROUTING" ||
+        current === "NO_ROUTE"
         ? "NAVIGATING"
         : current;
     case "ROUTE_FAIL":

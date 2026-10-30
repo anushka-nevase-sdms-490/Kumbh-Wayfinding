@@ -40,14 +40,14 @@ You do **not** need Flutter to use the React website.
 - FastAPI, Uvicorn — web API  
 - SQLAlchemy, GeoAlchemy2, psycopg2 — database  
 - Pydantic — data validation  
-- boto3, python-jose, passlib, aiofiles — storage / auth helpers  
+- aiofiles — file helpers (sign-in uses the standard library: scrypt, secrets)  
 
 Uses **SQLite by default** (no Postgres required for local demo).
 
 ### Frontend (`frontend/package.json`)
 
 - React 18 + Vite + TypeScript  
-- html5-qrcode — camera QR scan  
+- MapLibre GL + Protomaps basemap style — offline map (tiles bundled in `frontend/public/map/`)  
 
 ---
 
@@ -56,7 +56,7 @@ Uses **SQLite by default** (no Postgres required for local demo).
 | URL | What |
 |-----|------|
 | http://localhost:5173 | **Open this** — visitor UI |
-| http://localhost:8000 | Backend API |
+| http://localhost:8000 | Backend API (start.sh uses 8010+ if 8000 is taken by another program) |
 | http://localhost:8000/docs | API documentation |
 
 Stop with **Ctrl+C**.

@@ -1,0 +1,63 @@
+# Production: Postgres + API + Caddy (HTTPS). See deploy/README.md.
+#   cd deploy && cp .env.example .env   # fill it in
+#   docker compose -f docker-compose.prod.yml up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: setu
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: setu
+    volumes:
+      - setu_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U setu -d setu"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ../backend
+    restart: unless-stopped
+    environment:
+      SETU_ENV: production
+      USE_SQLITE: "0"
+      DATABASE_URL: postgresql+psycopg2://setu:${POSTGRES_PASSWORD}@db:5432/setu
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      CORS_ORIGINS: https://${SETU_DOMAIN:?set SETU_DOMAIN in .env}
+      PACK_DIR: /data/packs
+      # Saved OpenStreetMap answers, incl. the water data the river checks need.
+      OSM_DIR: /data/osm
+      # Only Caddy reaches the API (no published port), so trust its X-Forwarded-For.
+      FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - setu_packs:/data/packs
+      - setu_osm:/data/osm
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: ../frontend
+    restart: unless-stopped
+    environment:
+      SETU_DOMAIN: ${SETU_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  setu_pg:
+  setu_packs:
+  setu_osm:
+  caddy_data:
+  caddy_config:

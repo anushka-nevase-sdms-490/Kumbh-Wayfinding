@@ -1,9 +1,13 @@
 /**
- * Official Nashik Kumbh places and coordinates, taken from
- * https://kumbhguidenashik.in/map (an independent guide — confirm dates and
- * rules with the Nashik Kumbh Mela Authority). Volunteers pick these places
- * when registering a board so every team uses the same names and coordinates;
- * visitors see the how-to-get-there advice when no walked lane exists.
+ * Official Nashik Kumbh places. Names, zones, notes and how-to-get-there text
+ * come from https://kumbhguidenashik.in/map (an independent guide — confirm
+ * dates and rules with the Nashik Kumbh Mela Authority). Its coordinates are
+ * 0.7–2 km off, so positions come from OpenStreetMap where OSM has the place
+ * (checked 2026-10-29 against the offline basemap build 20261029); the rest
+ * keep the guide's point, marked "approximate".
+ *
+ * Volunteers pick these places so every team uses the same names; the place
+ * itself is always saved from the volunteer's on-site GPS.
  */
 import type { QrNode } from "./types";
 
@@ -20,6 +24,15 @@ export type OfficialPlace = {
   zone: ZoneId | null;
   lat: number;
   lon: number;
+  /** Where lat/lon come from. */
+  coordSource: string;
+  /**
+   * "osm": matched to an OpenStreetMap feature. "approximate": no OSM
+   * feature (temporary grounds) — position must be confirmed on site.
+   */
+  coordQuality: "osm" | "approximate";
+  /** Big grounds: how far from the point a volunteer can still be "at" it. */
+  areaRadiusM?: number;
   /** What the place is (facilities, size). */
   note: string;
   /** How to reach it when there is no walked lane — shuttle, walk, bus. */
@@ -34,8 +47,12 @@ export const OFFICIAL_PLACES: OfficialPlace[] = [
     node_type: "ghat",
     area: "Nashik",
     zone: "A",
-    lat: 19.9975,
-    lon: 73.791,
+    lat: 20.007264,
+    lon: 73.792489,
+    coordSource:
+      'OSM: Ramkund (attraction) 20.007264,73.792489; the tank "Ram Kund" (water) is ~150 m W at 20.007836,73.79117',
+    coordQuality: "osm",
+    areaRadiusM: 200,
     note: "Central ghat on the Godavari for the Vaishnava Shahi Snan.",
     getThere:
       "Pedestrian-only inner core. Walk in — vehicles are not allowed in Zone A.",
@@ -49,6 +66,8 @@ export const OFFICIAL_PLACES: OfficialPlace[] = [
     zone: "A",
     lat: 19.932,
     lon: 73.5305,
+    coordSource: "Guide point; it matches Trimbakeshwar Temple (~200 m from the kund). Kushavarta is not in OSM",
+    coordQuality: "approximate",
     note: "Source pond of the Godavari, about 200 m from Trimbakeshwar Jyotirlinga.",
     getThere:
       "Vehicles stop at the outer Trimbak bypass. Walk 1.4 km from the Trimbak drop-off (15–20 min).",
@@ -60,8 +79,11 @@ export const OFFICIAL_PLACES: OfficialPlace[] = [
     node_type: "tent_city",
     area: "Nashik",
     zone: "B",
-    lat: 19.988,
-    lon: 73.812,
+    lat: 20.000779,
+    lon: 73.812584,
+    coordSource: "OSM: Tapovan (park area); the tent city spans the grounds",
+    areaRadiusM: 1500,
+    coordQuality: "osm",
     note: "Large sadhu tent city at Tapovan.",
     getThere:
       "Feeder e-buses run up to the Tapovan gate only. On foot: 3.1 km from Ramkund via the Godavari riverbed path (35–45 min).",
@@ -75,6 +97,8 @@ export const OFFICIAL_PLACES: OfficialPlace[] = [
     zone: "C",
     lat: 19.921,
     lon: 73.725,
+    coordSource: "Guide point; temporary parking ground, not in OSM (Vilholi Dam is 0.9 km SW)",
+    coordQuality: "approximate",
     note: "Parking for cars, tempo travellers and private buses from Mumbai/Thane (NH-3). Free MSRTC shuttle bay.",
     getThere:
       "12 km from the ghats. Take the free ring shuttle (about every 3 min) into Zone B.",
@@ -88,6 +112,8 @@ export const OFFICIAL_PLACES: OfficialPlace[] = [
     zone: "C",
     lat: 20.041,
     lon: 73.852,
+    coordSource: "Guide point; temporary parking ground, not in OSM",
+    coordQuality: "approximate",
     note: "Park-and-ride for the Dhule/MP entry (NH-3). No private cars past this junction.",
     getThere:
       "9 km from the ghats. Take the free ring shuttle (about every 3 min) into Zone B.",
@@ -99,8 +125,12 @@ export const OFFICIAL_PLACES: OfficialPlace[] = [
     node_type: "parking",
     area: "Nashik",
     zone: "C",
-    lat: 19.945,
-    lon: 73.831,
+    lat: 19.95063,
+    lon: 73.84879,
+    coordSource:
+      "Nominatim (OSM): Sinnar Phata Marketyard, used as a proxy; the parking ground is temporary and not in OSM",
+    areaRadiusM: 1000,
+    coordQuality: "approximate",
     note: "Parking for the Pune/Shirdi entry (NH-50).",
     getThere:
       "11 km from the ghats. Continuous shuttle to the Tapovan buffer (Zone B).",
@@ -112,8 +142,10 @@ export const OFFICIAL_PLACES: OfficialPlace[] = [
     node_type: "transport",
     area: "Nashik",
     zone: null,
-    lat: 19.954,
-    lon: 73.839,
+    lat: 19.948057,
+    lon: 73.842083,
+    coordSource: "OSM: Nashik Road railway station",
+    coordQuality: "osm",
     note: "24x7 help desks and luggage cloakrooms.",
     getThere:
       "9.8 km from Ramkund. MSRTC feeder electric bus from the Platform 1 exit, every 3 min (about 20 min ride).",
@@ -125,8 +157,12 @@ export const OFFICIAL_PLACES: OfficialPlace[] = [
     node_type: "transport",
     area: "Nashik",
     zone: "B",
-    lat: 19.998,
-    lon: 73.784,
+    lat: 19.998253,
+    lon: 73.780746,
+    coordSource:
+      "OSM: Thakkar Bazzar Bus Stand (New CBS); Mela Bus Stand is ~155 m N at 19.999637,73.780714",
+    coordQuality: "osm",
+    areaRadiusM: 200,
     note: "Inter-city private buses are redirected to the outer parkings.",
     getThere:
       "2.2 km walk to Ramkund (25–35 min). Autos are banned on Snan days.",
@@ -138,8 +174,10 @@ export const OFFICIAL_PLACES: OfficialPlace[] = [
     node_type: "medical",
     area: "Nashik",
     zone: null,
-    lat: 19.994,
-    lon: 73.787,
+    lat: 19.997459,
+    lon: 73.778343,
+    coordSource: "OSM: Civil Hospital, Nashik",
+    coordQuality: "osm",
     note: "24x7 trauma care, ICU, burn unit and Kumbh disaster ward.",
     getThere: "About 15 min walk from Ramkund. 24x7 ambulance corridor.",
   },
@@ -152,6 +190,7 @@ export const SITE_CATEGORIES: { id: string; label: string }[] = [
   { id: "tent_cities", label: "Tent Cities" },
   { id: "trains_buses", label: "Trains & Buses" },
   { id: "hospitals", label: "Hospitals" },
+  { id: "temples", label: "Temples & shrines" },
   { id: "other", label: "Other mela places" },
 ];
 
@@ -167,6 +206,8 @@ export function siteCategory(nodeType: string): string {
       return "trains_buses";
     case "medical":
       return "hospitals";
+    case "temple":
+      return "temples";
     default:
       return "other";
   }
@@ -175,6 +216,15 @@ export function siteCategory(nodeType: string): string {
 export function siteCategoryLabel(nodeType: string): string {
   const id = siteCategory(nodeType);
   return SITE_CATEGORIES.find((c) => c.id === id)?.label ?? "Other mela places";
+}
+
+/**
+ * How far a volunteer may stand from an official point before the form warns:
+ * tight for OSM-matched places, loose for big grounds and unconfirmed points.
+ */
+export function officialWarnRadiusM(place: OfficialPlace): number {
+  if (place.areaRadiusM) return place.areaRadiusM;
+  return place.coordQuality === "osm" ? 50 : 2000;
 }
 
 /** Official entry for a registered board (volunteers keep the official name). */

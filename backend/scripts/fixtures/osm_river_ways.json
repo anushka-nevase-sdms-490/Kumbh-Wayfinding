@@ -1,0 +1,134 @@
+{
+ "elements": [
+  {
+   "type": "way",
+   "id": 11,
+   "nodes": [
+    101,
+    102,
+    103,
+    104
+   ],
+   "tags": {
+    "highway": "residential",
+    "name": "North Ghat Road"
+   },
+   "geometry": [
+    {
+     "lat": 20.0104,
+     "lon": 73.8
+    },
+    {
+     "lat": 20.0104,
+     "lon": 73.802
+    },
+    {
+     "lat": 20.0104,
+     "lon": 73.803
+    },
+    {
+     "lat": 20.0104,
+     "lon": 73.804
+    }
+   ]
+  },
+  {
+   "type": "way",
+   "id": 12,
+   "nodes": [
+    201,
+    202,
+    203,
+    206
+   ],
+   "tags": {
+    "highway": "residential",
+    "name": "South Ghat Road"
+   },
+   "geometry": [
+    {
+     "lat": 20.0098,
+     "lon": 73.8
+    },
+    {
+     "lat": 20.0098,
+     "lon": 73.802
+    },
+    {
+     "lat": 20.0098,
+     "lon": 73.803
+    },
+    {
+     "lat": 20.0098,
+     "lon": 73.806
+    }
+   ]
+  },
+  {
+   "type": "way",
+   "id": 13,
+   "nodes": [
+    103,
+    203
+   ],
+   "tags": {
+    "highway": "footway",
+    "bridge": "yes",
+    "name": "Test Footbridge"
+   },
+   "geometry": [
+    {
+     "lat": 20.0104,
+     "lon": 73.803
+    },
+    {
+     "lat": 20.0098,
+     "lon": 73.803
+    }
+   ]
+  },
+  {
+   "type": "way",
+   "id": 14,
+   "nodes": [
+    102,
+    202
+   ],
+   "tags": {
+    "highway": "footway"
+   },
+   "geometry": [
+    {
+     "lat": 20.0104,
+     "lon": 73.802
+    },
+    {
+     "lat": 20.0098,
+     "lon": 73.802
+    }
+   ]
+  },
+  {
+   "type": "way",
+   "id": 15,
+   "nodes": [
+    101,
+    201
+   ],
+   "tags": {
+    "highway": "path",
+    "ford": "yes"
+   },
+   "geometry": [
+    {
+     "lat": 20.0104,
+     "lon": 73.8
+    },
+    {
+     "lat": 20.0098,
+     "lon": 73.8
+    }
+   ]
+  }
+ ]
+}

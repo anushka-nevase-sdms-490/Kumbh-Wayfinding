@@ -11,6 +11,7 @@ backend/.venv/
 backend/setu_local.db
 backend/**/__pycache__/
 backend/data/packs/
+backend/data/osm/
 data/packs/
 admin/node_modules/
 admin/.next/

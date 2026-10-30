@@ -96,26 +96,6 @@ export function PlaceIcon({ type, ...p }: IconProps & { type: string }) {
   }
 }
 
-export function ScanIcon(p: IconProps) {
-  return (
-    <Svg {...p}>
-      <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
-      <path d="M7 12h10" />
-    </Svg>
-  );
-}
-
-export function BoardsIcon(p: IconProps) {
-  return (
-    <Svg {...p}>
-      <rect x="3" y="3" width="7" height="7" rx="1.5" />
-      <rect x="14" y="3" width="7" height="7" rx="1.5" />
-      <rect x="3" y="14" width="7" height="7" rx="1.5" />
-      <path d="M14 14h3v3M21 14v.01M14 21h7v-4" />
-    </Svg>
-  );
-}
-
 export function CompassIcon(p: IconProps) {
   return (
     <Svg {...p}>

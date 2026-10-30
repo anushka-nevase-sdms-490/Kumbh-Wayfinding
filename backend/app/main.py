@@ -2,15 +2,22 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
-from .config import settings
+from .config import production_problems, settings
 from .db import init_db
-from .routers import network, nodes, pack, volunteer
+from .idempotency import idempotency_middleware
+from .body_limit import BodySizeLimit
+from . import auth
+from .routers import admin, nodes, pack, reports, volunteer
 from .seed import seed
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    problems = production_problems(settings)
+    if problems:
+        raise RuntimeError("Unsafe production settings: " + "; ".join(problems))
     init_db()
     try:
         seed()
@@ -24,21 +31,42 @@ app = FastAPI(
     description="Offline wayfinding backend for Kumbh Innovation Challenge 2027",
     version="0.1.0",
     lifespan=lifespan,
+    # The interactive API docs list every admin endpoint: development only.
+    docs_url=None if settings.setu_env == "production" else "/docs",
+    redoc_url=None if settings.setu_env == "production" else "/redoc",
+    openapi_url=None if settings.setu_env == "production" else "/openapi.json",
 )
+
+# Innermost (added first): sees the plain JSON answer, before gzip.
+app.middleware("http")(idempotency_middleware)
+
+
+MAX_BODY_BYTES = 4 * 1024 * 1024  # the largest real request (an admin sync) is far smaller
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+# Sign-in uses a Bearer token, never cookies, so no credentials over CORS
+# (credentials with "*" is not even valid CORS).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if origins != ["*"] else ["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+    # The volunteer queue reads these to tell "still being saved" from a refusal.
+    expose_headers=["Retry-After", "Idempotent-Replay"],
 )
 
+# The pack (places + map lanes) is large JSON; gzip cuts it ~4×.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+# Outermost: refuse oversized request bodies, also ones sent without a length.
+app.add_middleware(BodySizeLimit, max_bytes=MAX_BODY_BYTES)
+
+app.include_router(auth.router)
 app.include_router(nodes.router)
 app.include_router(pack.router)
 app.include_router(volunteer.router)
-app.include_router(network.router)
+app.include_router(reports.router)
+app.include_router(admin.router)
 
 
 @app.get("/health")

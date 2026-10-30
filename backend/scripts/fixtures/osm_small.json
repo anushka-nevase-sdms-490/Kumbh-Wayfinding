@@ -1,0 +1,18 @@
+{
+  "elements": [
+    {"type": "node", "id": 1001, "lat": 20.0050, "lon": 73.7900, "tags": {"amenity": "toilets"}},
+    {"type": "node", "id": 1002, "lat": 20.0068, "lon": 73.7955, "tags": {"amenity": "place_of_worship", "name": "Kalaram Mandir", "name:mr": "काळाराम मंदिर"}},
+    {"type": "way", "id": 2001, "center": {"lat": 20.0069, "lon": 73.7956}, "tags": {"amenity": "place_of_worship", "name": "Kalaram Mandir"}},
+    {"type": "node", "id": 1003, "lat": 20.0070, "lon": 73.7970, "tags": {"amenity": "place_of_worship"}},
+    {"type": "node", "id": 1004, "lat": 20.007264, "lon": 73.792489, "tags": {"tourism": "attraction", "name": "Ramkund"}},
+    {"type": "node", "id": 1005, "lat": 19.9500, "lon": 73.7500, "tags": {"amenity": "hospital", "name": "Small Private Hospital"}},
+    {"type": "node", "id": 1006, "lat": 19.9510, "lon": 73.7510, "tags": {"amenity": "hospital", "name": "District Hospital", "healthcare": "hospital"}},
+    {"type": "node", "id": 1007, "lat": 20.0100, "lon": 73.8000, "tags": {"amenity": "drinking_water"}},
+    {"type": "node", "id": 1008, "lat": 20.0120, "lon": 73.8010, "tags": {"amenity": "toilets"}},
+    {"type": "node", "id": 1009, "lat": 20.0080, "lon": 73.7920, "tags": {"highway": "bus_stop", "name": "Stop"}},
+    {"type": "node", "id": 1010, "lat": 20.0090, "lon": 73.7910, "tags": {"amenity": "bus_station", "name": "बस स्थानक"}},
+    {"type": "node", "id": 1011, "lat": 20.0130, "lon": 73.7990, "tags": {"amenity": "parking"}},
+    {"type": "node", "id": 1012, "lat": 20.007354, "lon": 73.792489, "tags": {"amenity": "place_of_worship", "name": "Ram Mandir"}},
+    {"type": "node", "id": 1013, "lat": 20.01526, "lon": 73.8050, "tags": {"amenity": "place_of_worship", "name": "Sti Datta Paduka"}}
+  ]
+}

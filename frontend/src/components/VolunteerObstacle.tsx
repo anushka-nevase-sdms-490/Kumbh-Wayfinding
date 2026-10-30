@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import type { GraphEdge, QrNode } from "../lib/types";
+import { isRegisteredLocation, type GraphEdge, type QrNode } from "../lib/types";
+import { authSender, sendOrQueue } from "../lib/outbox";
+import { loadVolunteerData } from "../lib/volunteerData";
+import { VisitorReports } from "./VisitorReports";
+import { useI18n } from "../i18n/context";
 import "./Volunteer.css";
 
 type Props = {
@@ -10,6 +14,7 @@ type Props = {
 
 /** Volunteer marks corridors blocked / doors closed so A* never routes through them. */
 export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
+  const { t, placeLabel } = useI18n();
   const [nodes, setNodes] = useState<QrNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -18,6 +23,8 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
   const [doorState, setDoorState] = useState("none");
   const [passageKind, setPassageKind] = useState("corridor");
   const [note, setNote] = useState("");
+  /** Hours until the block ends by itself; 0 = until a volunteer reopens it. */
+  const [hours, setHours] = useState(4);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -26,29 +33,11 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${apiBase}/api/pack/latest/json`);
-        if (!res.ok) return;
-        const data = (await res.json()) as {
-          nodes?: QrNode[];
-          edges?: GraphEdge[];
-        };
-        // Pack omits blocked/closed — also fetch all edges from API if available.
-        const list = (data.nodes ?? [])
-          .filter((n) => n.code.trim().toUpperCase() !== "VOLUNTEER_REGISTER")
-          .sort((a, b) => a.name.localeCompare(b.name));
-        let edgeList = data.edges ?? [];
-        try {
-          const er = await fetch(`${apiBase}/api/edges`);
-          if (er.ok) edgeList = (await er.json()) as GraphEdge[];
-        } catch {
-          /* use pack edges */
+        const data = await loadVolunteerData(apiBase, true);
+        if (data && !cancelled) {
+          setNodes(data.nodes);
+          setEdges(data.edges);
         }
-        if (!cancelled) {
-          setNodes(list);
-          setEdges(edgeList);
-        }
-      } catch {
-        /* ignore */
       } finally {
         if (!cancelled) setLoaded(true);
       }
@@ -58,18 +47,23 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
     };
   }, [apiBase]);
 
-  const nameOf = (code: string) =>
-    nodes.find((n) => n.code.toUpperCase() === code.toUpperCase())?.name ??
-    code;
+  // The Devanagari name in Hindi/Marathi when the place has one.
+  const nameOf = (code: string) => {
+    const n = nodes.find((x) => x.code.toUpperCase() === code.toUpperCase());
+    return n ? placeLabel(n) : code;
+  };
 
   // Every known lane between registered boards, including blocked ones (✕) so
   // they can be reopened.
   const lanes = useMemo(() => {
-    const codes = new Set(nodes.map((n) => n.code.toUpperCase()));
+    // Volunteer lanes between real places (map roads have thousands of hidden junctions).
+    const codes = new Set(nodes.filter(isRegisteredLocation).map((n) => n.code.toUpperCase()));
     return edges
       .filter(
         (e) =>
-          codes.has(e.from_code.toUpperCase()) && codes.has(e.to_code.toUpperCase())
+          e.source !== "osm" &&
+          codes.has(e.from_code.toUpperCase()) &&
+          codes.has(e.to_code.toUpperCase())
       )
       .map((e) => ({
         key: `${e.from_code.toUpperCase()}|${e.to_code.toUpperCase()}`,
@@ -87,21 +81,22 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
     setErr(null);
     setMsg(null);
     if (!lane) {
-      setErr("Choose a lane first.");
+      setErr(t("vol.chooseLaneFirst"));
       return;
     }
     setBusy(true);
     try {
-      const res = await fetch(`${apiBase}/api/volunteer/edge-status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const closing = blocked || doorState === "closed";
+      const r = await sendOrQueue(
+        "/api/volunteer/edge-status",
+        {
           from_code: fromCode,
           to_code: toCode,
           blocked,
           door_state: doorState,
           passage_kind: passageKind,
           obstacle_note: note.trim() || null,
+          hours: blocked && hours > 0 ? hours : null,
           walkable:
             blocked ||
             doorState === "closed" ||
@@ -109,25 +104,26 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
             passageKind === "wall"
               ? false
               : true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErr(
-          typeof data?.detail === "string"
-            ? data.detail
-            : "Could not update path status"
-        );
+        },
+        {
+          label: `${closing ? "Block" : "Update"} ${nameOf(fromCode)} ↔ ${nameOf(toCode)}`,
+          labelKey: closing ? "vol.label.block" : "vol.label.update",
+          labelVars: { a: nameOf(fromCode), b: nameOf(toCode) },
+        },
+        authSender(apiBase)
+      );
+      if (r.kind === "refused") {
+        setErr(r.message);
         return;
       }
-      setMsg(
-        blocked || doorState === "closed"
-          ? `Path ${nameOf(fromCode)} ↔ ${nameOf(toCode)} removed from routes.`
-          : `Path ${nameOf(fromCode)} ↔ ${nameOf(toCode)} reopened for routing.`
-      );
+      if (r.kind === "queued") {
+        setMsg(t("vol.queued"));
+        return;
+      }
+      setMsg(t(closing ? "vol.obstacle.removed" : "vol.obstacle.reopened", { a: nameOf(fromCode), b: nameOf(toCode) }));
       onSaved();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Network error");
+    } catch {
+      setErr(t("vol.networkError"));
     } finally {
       setBusy(false);
     }
@@ -135,7 +131,7 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
 
   async function reopen() {
     if (!lane) {
-      setErr("Choose a lane first.");
+      setErr(t("vol.chooseLaneFirst"));
       return;
     }
     setBlocked(false);
@@ -143,27 +139,35 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(`${apiBase}/api/volunteer/edge-status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const r = await sendOrQueue(
+        "/api/volunteer/edge-status",
+        {
           from_code: fromCode,
           to_code: toCode,
           blocked: false,
           door_state: doorState === "closed" ? "open" : doorState,
           walkable: true,
           obstacle_note: null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErr(typeof data?.detail === "string" ? data.detail : "Failed");
+        },
+        {
+          label: `Reopen ${nameOf(fromCode)} ↔ ${nameOf(toCode)}`,
+          labelKey: "vol.label.reopen",
+          labelVars: { a: nameOf(fromCode), b: nameOf(toCode) },
+        },
+        authSender(apiBase)
+      );
+      if (r.kind === "refused") {
+        setErr(r.message);
         return;
       }
-      setMsg(`Reopened ${nameOf(fromCode)} ↔ ${nameOf(toCode)}`);
+      if (r.kind === "queued") {
+        setMsg(t("vol.queued"));
+        return;
+      }
+      setMsg(t("vol.obstacle.reopened", { a: nameOf(fromCode), b: nameOf(toCode) }));
       onSaved();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Network error");
+    } catch {
+      setErr(t("vol.networkError"));
     } finally {
       setBusy(false);
     }
@@ -172,68 +176,64 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
   return (
     <section className="screen flow volunteer-screen">
       <header className="volunteer-head">
-        <button type="button" className="back" onClick={onBack} aria-label="Back">
+        <button type="button" className="back" onClick={onBack} aria-label={t("vol.back")}>
           ←
         </button>
         <div>
-          <h2>Report a blocked lane</h2>
-          <p>Barricade, closed gate, or crowd — routes will avoid that lane</p>
+          <h2>{t("vol.obstacle.title")}</h2>
+          <p>{t("vol.obstacle.subtitle")}</p>
         </div>
       </header>
 
+      <VisitorReports apiBase={apiBase} onSaved={onSaved} />
+
       {loaded && lanes.length === 0 ? (
         <div className="empty-state">
-          <strong>No walked lanes yet</strong>
-          <p>
-            Register at least two places and record the walk between them.
-            Their lane then appears here.
-          </p>
+          <strong>{t("vol.noLanesTitle")}</strong>
+          <p>{t("vol.noLanesBody")}</p>
         </div>
       ) : (
       <div className="volunteer-form">
-        <p className="field-hint">
-          Mark a lane blocked when a barricade, closed gate, or crowd closes it.
-          The guide then uses another lane, or says there is no route.
-        </p>
+        <p className="field-hint">{t("vol.obstacle.intro")}</p>
 
         <label>
-          Lane
+          {t("vol.lane")}
           <select value={laneKey} onChange={(e) => setLaneKey(e.target.value)}>
             <option value="" disabled>
-              Choose a lane…
+              {t("vol.chooseLane")}
             </option>
             {lanes.map((l) => (
               <option key={l.key} value={l.key}>
                 {nameOf(l.a)} ↔ {nameOf(l.b)}
-                {l.closed ? " ✕ blocked" : ""}
+                {l.closed ? t("vol.obstacle.blockedTag") : ""}
               </option>
             ))}
           </select>
         </label>
 
         <label>
-          Obstacle type
+          {t("vol.obstacle.type")}
           <select
             value={passageKind}
             onChange={(e) => setPassageKind(e.target.value)}
           >
-            <option value="corridor">Open mela lane</option>
-            <option value="door">Gate</option>
-            <option value="wall">Barricade</option>
-            <option value="passage">Narrow passage</option>
+            <option value="corridor">{t("vol.obstacle.kind.corridor")}</option>
+            <option value="door">{t("vol.obstacle.kind.door")}</option>
+            <option value="wall">{t("vol.obstacle.kind.wall")}</option>
+            <option value="passage">{t("vol.obstacle.kind.passage")}</option>
           </select>
         </label>
 
         <label>
-          Door state
+          {t("vol.obstacle.door")}
           <select
             value={doorState}
             onChange={(e) => setDoorState(e.target.value)}
           >
-            <option value="none">Not a door</option>
-            <option value="open">Open</option>
-            <option value="closed">Closed</option>
-            <option value="unknown">Unknown</option>
+            <option value="none">{t("vol.obstacle.door.none")}</option>
+            <option value="open">{t("vol.obstacle.door.open")}</option>
+            <option value="closed">{t("vol.obstacle.door.closed")}</option>
+            <option value="unknown">{t("vol.obstacle.door.unknown")}</option>
           </select>
         </label>
 
@@ -243,15 +243,28 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
             checked={blocked}
             onChange={(e) => setBlocked(e.target.checked)}
           />
-          Lane blocked (barricade, closed gate, crowd)
+          {t("vol.obstacle.blocked")}
         </label>
 
+        {blocked && (
+          <label>
+            {t("vol.obstacle.for")}
+            <select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
+              <option value={1}>{t("vol.obstacle.h1")}</option>
+              <option value={4}>{t("vol.obstacle.h4")}</option>
+              <option value={12}>{t("vol.obstacle.h12")}</option>
+              <option value={0}>{t("vol.obstacle.untilReopen")}</option>
+            </select>
+          </label>
+        )}
+
         <label>
-          Note (optional)
+          {t("vol.obstacle.note")}
           <input
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="e.g. barricade at Ram Kund lane"
+            placeholder={t("vol.obstacle.notePlaceholder")}
+            maxLength={64}
           />
         </label>
 
@@ -264,7 +277,7 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
           disabled={busy || !lane}
           onClick={() => void save()}
         >
-          {busy ? "Saving…" : "Save — remove from routes"}
+          {busy ? t("vol.saving") : t("vol.obstacle.save")}
         </button>
         <button
           type="button"
@@ -272,7 +285,7 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
           disabled={busy || !lane}
           onClick={() => void reopen()}
         >
-          Reopen path
+          {t("vol.obstacle.reopen")}
         </button>
       </div>
       )}

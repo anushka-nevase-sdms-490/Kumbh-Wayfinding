@@ -8,7 +8,29 @@ export type QrNode = {
   node_type: string;
   icon?: string;
   description?: string | null;
+  /** Accuracy (m) of the volunteer's GPS fix when the place was saved. */
+  gps_accuracy_m?: number | null;
+  /** Trust level (backend app/verification.py). */
+  verification?: Verification;
 };
+
+/** How far data can be trusted; nothing is promoted automatically. */
+export type Verification =
+  | "osm_imported"
+  | "unverified"
+  | "remotely_reviewed"
+  | "volunteer_verified"
+  | "officially_verified"
+  | "rejected";
+
+const FIELD_VERIFIED = new Set<string>(["volunteer_verified", "officially_verified"]);
+
+/** Checked on the ground (volunteer walk or official source): drawn solid, preferred. */
+export function isFieldVerified(e: Pick<GraphEdge, "verification" | "verified" | "source">): boolean {
+  if (e.verification) return FIELD_VERIFIED.has(e.verification);
+  // Packs from before trust levels: a walked volunteer lane.
+  return !!e.verified && e.source !== "osm";
+}
 
 export type GraphEdge = {
   id: number;
@@ -35,56 +57,65 @@ export type GraphEdge = {
   verified_at?: string | null;
   /** JSON string of path waypoints, or parsed list from pack. */
   path_json?: string | null;
+  /** volunteer (walked) | osm (map road nobody has walked yet). */
+  source?: string;
+  /** Street name (map lanes). */
+  name?: string | null;
+  /** Trust level (backend app/verification.py). */
+  verification?: Verification;
 };
 
 export type OfflinePack = {
   version: string;
   signature: string;
+  /** When the server built this pack (ISO time). */
+  generated_at?: string;
+  /** OpenStreetMap snapshot files the data was built from (dataset version). */
+  sources?: Record<string, string>;
+  attribution?: string;
   nodes: QrNode[];
   edges: GraphEdge[];
 };
 
-/** Special QR payload / path segment — opens volunteer registration (not a place node). */
-export const VOLUNTEER_REGISTER_CODE = "VOLUNTEER_REGISTER";
+/** A pack worth routing on: has places, and every place has a code and a position. */
+export function isUsablePack(x: unknown): x is OfflinePack {
+  const p = x as Partial<OfflinePack> | null;
+  return (
+    !!p &&
+    typeof p.signature === "string" &&
+    Array.isArray(p.edges) &&
+    Array.isArray(p.nodes) &&
+    p.nodes.length > 0 &&
+    p.nodes.every(
+      (n) =>
+        typeof n?.code === "string" &&
+        n.code.length > 0 &&
+        Number.isFinite(n.lat) &&
+        Number.isFinite(n.lon)
+    )
+  );
+}
 
-/** Every Kumbh place board. The volunteer-registration QR is not a place. */
+/** A place imported from OpenStreetMap (not a hidden junction). */
+export function isOsmPlaceCode(code: string): boolean {
+  return /^OSM-[NWR]\d+$/.test(code);
+}
+
+/** How near a volunteer must stand to confirm a map place (area centres can be off). */
+export function osmConfirmRadiusM(code: string): number {
+  return code.startsWith("OSM-N") ? 30 : 60;
+}
+
+/** Hidden routing point on a map road (backend osm_network.py) — never listed. */
+export function isNetworkJunctionCode(code: string): boolean {
+  // OSM-J<node id> / OSM-A<place id>; official places are OSM-<NAME> (fallback pack).
+  return /^OSM-[JA]\d+$/.test(code);
+}
+
+/** A place a visitor can see and pick (not a hidden map junction). */
 export function isRegisteredLocation(node: Pick<QrNode, "code">): boolean {
-  const code = node.code.trim().toUpperCase();
-  return code.length > 0 && code !== VOLUNTEER_REGISTER_CODE;
-}
-
-/** App origin for phone-scannable QR links (same host the page is on). */
-export function appOrigin(): string {
-  if (typeof window === "undefined") return "";
-  return window.location.origin;
-}
-
-/** Deep link that opens Volunteer registration on the phone browser. */
-export function volunteerRegisterLink(origin = appOrigin()): string {
-  const base = origin.replace(/\/$/, "");
-  return `${base}/?mode=volunteer&register=1`;
-}
-
-/** Deep link for a printed location board (User start). */
-export function locationBoardLink(code: string, origin = appOrigin()): string {
-  const base = origin.replace(/\/$/, "");
-  return `${base}/?board=${encodeURIComponent(code.toUpperCase())}`;
-}
-
-export function isVolunteerRegisterPayload(raw: string): boolean {
-  const n = normalizeCode(raw);
-  if (n === VOLUNTEER_REGISTER_CODE) return true;
-  if (n.includes("MODE=VOLUNTEER") || n.includes("REGISTER=1")) return true;
-  try {
-    if (raw.includes("://")) {
-      const u = new URL(raw.trim());
-      if (u.searchParams.get("mode") === "volunteer") return true;
-      if (u.searchParams.get("register") === "1") return true;
-    }
-  } catch {
-    /* ignore */
-  }
-  return false;
+  const code = node.code.trim();
+  return code.length > 0 && !isNetworkJunctionCode(code);
 }
 
 export const TYPE_META: Record<
@@ -95,7 +126,9 @@ export const TYPE_META: Record<
   akhara: { label: "Akhara", emoji: "◎", hint: "Akhara camp" },
   tent_city: { label: "Tent city", emoji: "△", hint: "Sadhugram tent city" },
   medical: { label: "Medical", emoji: "+", hint: "Medical camp" },
+  temple: { label: "Temple / shrine", emoji: "△", hint: "Temple, dargah or other shrine" },
   toilet: { label: "Toilet", emoji: "□", hint: "Mela toilet block" },
+  water: { label: "Drinking water", emoji: "○", hint: "Drinking water point" },
   parking: { label: "Parking", emoji: "P", hint: "Mela parking" },
   lost_found: { label: "Lost & Found", emoji: "?", hint: "Lost visitors" },
   transport: { label: "Transport", emoji: "▷", hint: "Bus or rail hub" },
@@ -108,6 +141,7 @@ export const TYPE_META: Record<
 export function placeTone(type: string): string {
   switch (type) {
     case "ghat":
+    case "water":
       return "tone-water";
     case "medical":
       return "tone-medical";
@@ -116,37 +150,11 @@ export function placeTone(type: string): string {
       return "tone-transit";
     case "tent_city":
     case "akhara":
+    case "temple":
       return "tone-camp";
     default:
       return "tone-neutral";
   }
-}
-
-export function normalizeCode(raw: string): string {
-  let s = raw.trim();
-  try {
-    if (/^https?:\/\//i.test(s)) {
-      const u = new URL(s);
-      if (
-        u.searchParams.get("mode") === "volunteer" ||
-        u.searchParams.get("register") === "1"
-      ) {
-        return VOLUNTEER_REGISTER_CODE;
-      }
-      const board = u.searchParams.get("board") || u.searchParams.get("start");
-      if (board) return board.trim().toUpperCase();
-    }
-  } catch {
-    /* fall through */
-  }
-  s = s.toUpperCase();
-  if (s.includes("BOARD=")) {
-    const part = s.split("BOARD=")[1] ?? s;
-    s = part.split("&")[0] ?? part;
-  }
-  if (s.includes("/")) s = s.split("/").pop() ?? s;
-  if (s.includes("=")) s = s.split("=").pop() ?? s;
-  return s.trim().toUpperCase();
 }
 
 export function haversineM(

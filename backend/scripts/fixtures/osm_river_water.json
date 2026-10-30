@@ -1,0 +1,22 @@
+{
+ "elements": [
+  {
+   "type": "way",
+   "id": 900,
+   "tags": {
+    "waterway": "river",
+    "name": "Godavari"
+   },
+   "geometry": [
+    {
+     "lat": 20.01,
+     "lon": 73.799
+    },
+    {
+     "lat": 20.01,
+     "lon": 73.807
+    }
+   ]
+  }
+ ]
+}

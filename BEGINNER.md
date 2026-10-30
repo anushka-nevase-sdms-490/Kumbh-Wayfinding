@@ -16,7 +16,7 @@ cd /home/stark/Kumbh-Wayfinding/backend
 ./run.sh
 ```
 
-Open http://localhost:8000/health → should say `ok`
+Open http://localhost:8000/health (or the backend port start.sh printed) → should say `ok`
 
 ---
 
@@ -31,9 +31,9 @@ npm run dev
 Open **http://localhost:5173**
 
 1. Find my way  
-2. Select starting point (or scan QR)  
+2. Confirm the nearest place (GPS) or pick your starting point  
 3. Select destination  
-4. Follow the arrow + route list  
+4. Follow the orange route line on the offline map  
 
 ---
 

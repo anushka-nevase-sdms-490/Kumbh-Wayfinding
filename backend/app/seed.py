@@ -10,7 +10,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .db import AuditPhoto, Edge, PackVersion, QrNode, SessionLocal, init_db
-from .services.pack_builder import build_offline_pack
+from .services.pack_builder import ensure_current_pack
 
 DEMO_CODE_PREFIX = "SETU-"
 
@@ -45,8 +45,8 @@ def seed(db: Session | None = None):
     try:
         removed = _remove_demo_places(db)
         if removed or db.query(PackVersion).count() == 0:
-            pack, path = build_offline_pack(db)
-            print(f"Built pack {pack.version} → {path}")
+            row = ensure_current_pack(db)
+            print(f"Pack {row.version} → {row.file_path}")
     finally:
         if close:
             db.close()

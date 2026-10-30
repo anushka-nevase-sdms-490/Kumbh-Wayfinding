@@ -1,14 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { QRCodeCanvas } from "qrcode.react";
-import { haversineM, locationBoardLink, type QrNode } from "../lib/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { haversineM, isOsmPlaceCode, isRegisteredLocation, osmConfirmRadiusM, type QrNode } from "../lib/types";
+import { isSecureEnough } from "../lib/network";
+import { KUMBH_BOUNDS } from "../lib/mapArea";
 import {
   OFFICIAL_PLACES,
   SITE_CATEGORIES,
+  officialWarnRadiusM,
   siteCategory,
   type OfficialPlace,
 } from "../lib/officialPlaces";
-import { usePhoneAppBase } from "../hooks/usePhoneAppBase";
+import { formatDistance } from "../lib/nearest";
 import { useDeviceHeading } from "../hooks/useDeviceHeading";
+import { authSender, sendOrQueue } from "../lib/outbox";
+import { loadVolunteerData } from "../lib/volunteerData";
+import { positionsSimulated, volunteerGeo } from "../lib/location/geo";
+import { useI18n } from "../i18n/context";
+import type { MessageKey } from "../i18n/messages";
 import "./Volunteer.css";
 
 type Props = {
@@ -20,37 +27,38 @@ type Props = {
 type GpsState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "ok"; lat: number; lon: number }
+  | { status: "ok"; lat: number; lon: number; accuracyM: number }
   | { status: "error"; message: string };
 
 type DupInfo = { message: string; name?: string; code?: string };
 
+/** A place is only saved from a fix at least this accurate. */
+const MAX_REGISTER_ACCURACY_M = 30;
+
+const PLACE_KINDS = [
+  "ghat", "akhara", "tent_city", "medical", "temple", "toilet", "water",
+  "parking", "lost_found", "transport", "help", "junction", "landmark",
+] as const;
+
+
 type Waypoint = {
   lat: number;
   lon: number;
-  heading_deg: number;
+  /** null until the compass is live — the server then uses the GPS track. */
+  heading_deg: number | null;
   t_ms: number;
 };
-
-function isSecureEnough(): boolean {
-  if (typeof window === "undefined") return false;
-  if (window.isSecureContext) return true;
-  const host = window.location.hostname;
-  return host === "localhost" || host === "127.0.0.1";
-}
 
 export function VolunteerRegisterForm({
   apiBase,
   onBack,
   onRegistered,
 }: Props) {
-  const phoneOrigin = usePhoneAppBase();
   const heading = useDeviceHeading();
+  const { t } = useI18n();
   const [locationName, setLocationName] = useState("");
   const [localName, setLocalName] = useState("");
   const [placeKind, setPlaceKind] = useState("ghat");
-  const [latText, setLatText] = useState("");
-  const [lonText, setLonText] = useState("");
   const [gps, setGps] = useState<GpsState>({ status: "idle" });
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -60,92 +68,68 @@ export function VolunteerRegisterForm({
   const [connectTo, setConnectTo] = useState("");
   const [recording, setRecording] = useState(false);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
-  const [pathSaved, setPathSaved] = useState(false);
+  const [pathSaved, setPathSaved] = useState<"sent" | "queued" | null>(null);
+  /** No internet: the place (and its walk) wait on this phone to be sent. */
+  const [placeQueued, setPlaceQueued] = useState(false);
+  /** False when an admin must publish before visitors see the place. */
+  const [placeLive, setPlaceLive] = useState(true);
+  const [placesFromPhone, setPlacesFromPhone] = useState(false);
   const [official, setOfficial] = useState<OfficialPlace | null>(null);
-  // GPS callbacks read this so they never overwrite official coordinates.
-  const officialRef = useRef<OfficialPlace | null>(null);
-  officialRef.current = official;
-  // True only after the volunteer taps "Use my live location". Typing a
-  // coordinate switches back to manual so GPS never overwrites it.
-  const [useLive, setUseLive] = useState(false);
-  const useLiveRef = useRef(false);
-  useLiveRef.current = useLive;
-  const printRef = useRef<HTMLDivElement>(null);
+  /** Map place the volunteer said they are standing at ("This is …"). */
+  const [confirmCode, setConfirmCode] = useState("");
   const watchRef = useRef<number | null>(null);
-  const headingRef = useRef(heading.heading);
-  headingRef.current = heading.heading;
+  const headingRef = useRef<number | null>(heading.heading);
+  headingRef.current = heading.live ? heading.heading : null;
 
+  // Only the newest location request may update the form.
+  const gpsRequestRef = useRef(0);
   const requestGps = useCallback(() => {
-    if (!isSecureEnough()) {
-      setGps({
-        status: "error",
-        message:
-          "This page is not on trusted HTTPS, so the browser blocks GPS. Open the Volunteer QR link (ngrok https://… URL with a padlock), allow Location, then Retry — or type coordinates below.",
-      });
+    if (!isSecureEnough() && !positionsSimulated()) {
+      setGps({ status: "error", message: t("vol.reg.gpsHttps") });
       return;
     }
-    if (!navigator.geolocation) {
-      setGps({
-        status: "error",
-        message:
-          "Geolocation is not supported in this browser. Enter coordinates manually.",
-      });
+    if (!volunteerGeo.available()) {
+      setGps({ status: "error", message: t("vol.reg.noGps") });
       return;
     }
     setGps({ status: "loading" });
-    navigator.geolocation.getCurrentPosition(
+    const requestId = ++gpsRequestRef.current;
+    volunteerGeo.getCurrentPosition(
       (pos) => {
-        const lat = pos.coords.latitude;
-        const lon = pos.coords.longitude;
-        if (!officialRef.current && useLiveRef.current) {
-          setLatText(lat.toFixed(6));
-          setLonText(lon.toFixed(6));
-        }
-        setGps({ status: "ok", lat, lon });
+        if (requestId !== gpsRequestRef.current) return;
+        setGps({
+          status: "ok",
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          accuracyM: pos.coords.accuracy ?? 999,
+        });
       },
       (err) => {
+        if (requestId !== gpsRequestRef.current) return;
         const denied = err.code === err.PERMISSION_DENIED;
         setGps({
           status: "error",
-          message: denied
-            ? "Location permission was denied. Allow location for this site, or type latitude/longitude below."
-            : `Could not get location (${err.message}). Retry or enter coordinates manually.`,
+          message: denied ? t("vol.reg.gpsDenied") : t("vol.reg.gpsFailed", { why: err.message }),
         });
       },
       { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
     );
-  }, []);
+  }, [t]);
 
-  // Browser asks for location permission only when the volunteer opts in.
-  function chooseLiveLocation() {
-    useLiveRef.current = true;
-    setUseLive(true);
+  // The place is saved where the volunteer stands: get a fix right away.
+  useEffect(() => {
     requestGps();
-  }
-
-  function typeCoordinate(setter: (v: string) => void, value: string) {
-    useLiveRef.current = false;
-    setUseLive(false);
-    setter(value);
-  }
+  }, [requestGps]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const res = await fetch(`${apiBase}/api/pack/latest/json`);
-        if (!res.ok) return;
-        const data = (await res.json()) as { nodes?: QrNode[] };
-        const list = (data.nodes ?? [])
-          .filter((n) => n.code.trim().toUpperCase() !== "VOLUNTEER_REGISTER")
-          .sort((a, b) => a.name.localeCompare(b.name));
-        if (!cancelled) {
-          setExistingPlaces(list);
-          if (list.length === 1) setConnectTo(list[0].code);
-        }
-      } catch {
-        /* ignore */
-      }
+      const data = await loadVolunteerData(apiBase);
+      if (!data || cancelled) return;
+      const list = data.nodes.filter(isRegisteredLocation);
+      setExistingPlaces(list);
+      setPlacesFromPhone(data.fromPhone);
+      if (list.length === 1) setConnectTo(list[0].code);
     })();
     return () => {
       cancelled = true;
@@ -154,7 +138,7 @@ export function VolunteerRegisterForm({
 
   const stopWatch = useCallback(() => {
     if (watchRef.current != null) {
-      navigator.geolocation.clearWatch(watchRef.current);
+      volunteerGeo.clearWatch(watchRef.current);
       watchRef.current = null;
     }
   }, []);
@@ -175,20 +159,39 @@ export function VolunteerRegisterForm({
       setLocationName(place.name);
       setLocalName(place.local_name);
       setPlaceKind(place.node_type);
-      setLatText(place.lat.toFixed(6));
-      setLonText(place.lon.toFixed(6));
       return;
     }
     setLocationName("");
     setLocalName("");
-    if (useLive && gps.status === "ok") {
-      setLatText(gps.lat.toFixed(6));
-      setLonText(gps.lon.toFixed(6));
-    } else {
-      setLatText("");
-      setLonText("");
-    }
   }
+
+  // Same area as the offline map: a place outside it would have no map under it.
+  const outsideNashik =
+    gps.status === "ok" &&
+    !(
+      gps.lon >= KUMBH_BOUNDS[0] &&
+      gps.lat >= KUMBH_BOUNDS[1] &&
+      gps.lon <= KUMBH_BOUNDS[2] &&
+      gps.lat <= KUMBH_BOUNDS[3]
+    );
+
+  // Unconfirmed OpenStreetMap places of this kind right here. Several can be
+  // close together (temples 14 m apart), so the volunteer must pick one.
+  const nearbyMapPlaces = useMemo(() => {
+    if (gps.status !== "ok") return [];
+    return existingPlaces
+      .filter(
+        (p) =>
+          isOsmPlaceCode(p.code) &&
+          p.gps_accuracy_m == null &&
+          p.node_type === placeKind &&
+          haversineM(gps.lat, gps.lon, p.lat, p.lon) <= osmConfirmRadiusM(p.code)
+      )
+      .map((p) => ({ place: p, distM: haversineM(gps.lat, gps.lon, p.lat, p.lon) }))
+      .sort((a, b) => a.distM - b.distM);
+  }, [existingPlaces, gps, placeKind]);
+  // A choice that is no longer nearby (moved, changed kind) does not count.
+  const chosenMapPlace = nearbyMapPlaces.find((m) => m.place.code === confirmCode)?.place ?? null;
 
   const offsetFromOfficialM =
     official && gps.status === "ok"
@@ -198,21 +201,21 @@ export function VolunteerRegisterForm({
   function startPathRecording() {
     setFormError(null);
     if (!connectTo) {
-      setFormError("Select the previous board first.");
+      setFormError(t("vol.reg.selectStartFirst"));
       return;
     }
-    if (!navigator.geolocation) {
-      setFormError("GPS is required to record the verified path.");
+    if (!volunteerGeo.available()) {
+      setFormError(t("vol.reg.gpsRequired"));
       return;
     }
-    if (!isSecureEnough()) {
-      setFormError("Open the HTTPS (ngrok) link so GPS and compass work.");
+    if (!isSecureEnough() && !positionsSimulated()) {
+      setFormError(t("vol.reg.httpsForWalk"));
       return;
     }
     void heading.requestPermission();
     setWaypoints([]);
     setRecording(true);
-    watchRef.current = navigator.geolocation.watchPosition(
+    watchRef.current = volunteerGeo.watchPosition(
       (pos) => {
         const next: Waypoint = {
           lat: pos.coords.latitude,
@@ -237,9 +240,7 @@ export function VolunteerRegisterForm({
       },
       (e) => {
         setFormError(
-          e.code === e.PERMISSION_DENIED
-            ? "Allow location to record the walk."
-            : `GPS error: ${e.message}`
+          e.code === e.PERMISSION_DENIED ? t("vol.reg.allowLocationWalk") : t("vol.reg.gpsError", { why: e.message })
         );
       },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
@@ -249,9 +250,8 @@ export function VolunteerRegisterForm({
   function stopPathRecording() {
     stopWatch();
     setRecording(false);
-    // Refresh GPS at the end of the walk (new board position) — only if the
-    // volunteer chose live location; typed coordinates stay as typed.
-    if (useLiveRef.current) requestGps();
+    // The walk ends at the new place: refresh its position.
+    requestGps();
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -259,132 +259,144 @@ export function VolunteerRegisterForm({
     setFormError(null);
     setDup(null);
 
-    const lat = Number.parseFloat(latText);
-    const lon = Number.parseFloat(lonText);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      setFormError("Enter latitude and longitude, or tap Use my live location.");
+    if (gps.status !== "ok") {
+      setFormError(t("vol.reg.waitGps"));
       return;
     }
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-      setFormError("Coordinates out of range.");
+    if (gps.accuracyM > MAX_REGISTER_ACCURACY_M) {
+      setFormError(t("vol.reg.tooRough", { m: Math.round(gps.accuracyM), max: MAX_REGISTER_ACCURACY_M }));
       return;
     }
+    if (outsideNashik) {
+      setFormError(t("vol.reg.outside"));
+      return;
+    }
+    const { lat, lon } = gps;
     if (!locationName.trim() || !localName.trim()) {
-      setFormError("Please enter Location Name and Local Name.");
+      setFormError(t("vol.reg.namesRequired"));
       return;
     }
     if (existingPlaces.length > 0 && !connectTo) {
-      setFormError("Choose a Starting point (the board you walk from).");
+      setFormError(t("vol.reg.chooseStart"));
       return;
     }
     if (existingPlaces.length > 0 && waypoints.length < 2) {
-      setFormError(
-        "Record the lane: stand at the starting place, start recording, walk the mela lane to the destination, stop, then submit."
-      );
+      setFormError(t("vol.reg.recordFirst"));
       return;
     }
     if (recording) {
-      setFormError("Stop path recording before submitting.");
+      setFormError(t("vol.reg.stopFirst"));
       return;
     }
 
     setSubmitting(true);
     try {
-      const pathHeading =
-        waypoints.length > 0
-          ? waypoints[waypoints.length - 1].heading_deg
-          : null;
-
-      const res = await fetch(`${apiBase}/api/volunteer/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location_name: locationName.trim(),
+      const send = authSender(apiBase);
+      const name = locationName.trim();
+      const reg = await sendOrQueue(
+        "/api/volunteer/register",
+        {
+          location_name: name,
           local_name: localName.trim(),
           lat,
           lon,
+          gps_accuracy_m: Math.round(gps.accuracyM * 10) / 10,
           node_type: placeKind,
+          confirm_code: chosenMapPlace?.code ?? null,
           connect_to_code: connectTo || null,
-          path_heading_deg: pathHeading,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setFormError(
-          typeof data?.detail === "string"
-            ? data.detail
-            : data?.detail?.message || "Registration failed"
-        );
-        return;
-      }
-      if (!data.success) {
-        setDup({
-          message: data.message || "QR is already registered",
-          name: data.existing_name || data.node?.name,
-          code: data.node?.code,
-        });
-        return;
-      }
-
-      const node = data.node as QrNode;
-      let verified = false;
-      if (connectTo && waypoints.length >= 2) {
-        try {
-          const pr = await fetch(`${apiBase}/api/volunteer/record-path`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              from_code: connectTo,
-              to_code: node.code,
-              waypoints,
-            }),
+          // Lane headings come from the recorded walk (record-path below).
+          // The last walk sample faces *away* from the previous place, so it
+          // must not be sent as "facing previous".
+          path_heading_deg: null,
+          simulated: positionsSimulated(),
+        },
+        { label: `Register ${name}`, labelKey: "vol.label.register", labelVars: { name } },
+        send
+      );
+      if (reg.kind === "refused") {
+        const data = reg.data as { success?: boolean; message?: string; existing_name?: string; node?: QrNode } | null;
+        if (data?.success === false) {
+          setDup({
+            message: data.message || t("vol.reg.dupTitle"),
+            name: data.existing_name || data.node?.name,
+            code: data.node?.code,
           });
-          const pdata = await pr.json();
-          verified = pr.ok && !!pdata.success;
-        } catch {
-          verified = false;
+        } else {
+          setFormError(reg.message);
         }
+        return;
       }
 
-      setPathSaved(verified);
+      const walk = connectTo && waypoints.length >= 2;
+      const walkLabel = `Walk ${connectName} → ${name}`;
+      const walkLabelKey = { labelKey: "vol.label.walk" as const, labelVars: { from: connectName, to: name } };
+      if (reg.kind === "queued") {
+        // The walk ends at the new place, whose code the server gives: it is
+        // sent right after the place, with that code filled in.
+        if (walk) {
+          await sendOrQueue(
+            "/api/volunteer/record-path",
+            { from_code: connectTo, to_code: null, waypoints, simulated: positionsSimulated() },
+            {
+              label: walkLabel,
+              ...walkLabelKey,
+              queueOnly: true,
+              dependsOn: { id: reg.item.id, fields: ["to_code"] },
+            },
+            send
+          );
+        }
+        setPlaceQueued(true);
+        setPathSaved(walk ? "queued" : null);
+        setDone({
+          code: "",
+          name,
+          local_name: localName.trim(),
+          lat,
+          lon,
+          gps_accuracy_m: gps.accuracyM,
+          node_type: placeKind,
+        } as QrNode);
+        return;
+      }
+
+      const node = (reg.data as { node: QrNode }).node;
+      setPlaceLive((reg.data as { live?: boolean }).live !== false);
+      let path: "sent" | "queued" | null = null;
+      if (walk) {
+        const pr = await sendOrQueue(
+          "/api/volunteer/record-path",
+          { from_code: connectTo, to_code: node.code, waypoints, simulated: positionsSimulated() },
+          { label: walkLabel, ...walkLabelKey },
+          send
+        );
+        path = pr.kind === "sent" ? "sent" : pr.kind === "queued" ? "queued" : null;
+        if (pr.kind === "refused") setFormError(t("vol.reg.walkRefused", { why: pr.message }));
+      }
+
+      setPathSaved(path);
       setDone(node);
       onRegistered(node);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Network error");
+      setFormError(err instanceof Error ? err.message : t("vol.networkError"));
     } finally {
       setSubmitting(false);
     }
-  }
-
-  function savePng(node: QrNode) {
-    const canvas = document.getElementById(
-      "volunteer-location-qr-canvas"
-    ) as HTMLCanvasElement | null;
-    if (!canvas) return;
-    const link = document.createElement("a");
-    const safe = node.name.replace(/[^a-zA-Z0-9_-]+/g, "-");
-    link.download = `${node.code}-${safe}.png`;
-    link.href = canvas.toDataURL("image/png");
-    link.click();
-  }
-
-  function printQr() {
-    window.print();
   }
 
   if (dup) {
     return (
       <section className="screen flow volunteer-screen">
         <div className="volunteer-card warn">
-          <h2>⚠ QR is already registered</h2>
+          <h2>{t("vol.reg.dupTitle")}</h2>
           <p>
-            This QR is already associated with:
+            {t("vol.reg.dupBody")}
             <br />
-            <strong>{dup.name ?? "a location"}</strong>
+            <strong>{dup.name ?? t("vol.reg.aLocation")}</strong>
             {dup.code ? ` (${dup.code})` : ""}
           </p>
           <button type="button" className="btn primary" onClick={onBack}>
-            Close
+            {t("vol.reg.close")}
           </button>
         </div>
       </section>
@@ -394,78 +406,54 @@ export function VolunteerRegisterForm({
   if (done) {
     return (
       <section className="screen flow volunteer-screen">
-        <header className="volunteer-head no-print">
-          <button type="button" className="back" onClick={onBack} aria-label="Back">
+        <header className="volunteer-head">
+          <button type="button" className="back" onClick={onBack} aria-label={t("vol.back")}>
             ←
           </button>
           <div>
-            <h2>Registered</h2>
-            <p>Save or print the QR, then go back</p>
+            <h2>{placeQueued ? t("vol.reg.savedPhoneTitle") : t("vol.reg.registeredTitle")}</h2>
+            <p>
+              {placeQueued
+                ? t("vol.reg.savedPhoneSub")
+                : placeLive
+                  ? t("vol.reg.registeredSub")
+                  : t("vol.reg.registeredSubPending")}
+            </p>
           </div>
         </header>
 
-        <div className="volunteer-card success" ref={printRef}>
-          <h2>✓ Location registered successfully</h2>
+        <div className="volunteer-card success">
+          <h2>{placeQueued ? t("vol.reg.savedPhoneCard") : t("vol.reg.registeredCard")}</h2>
           <p className="volunteer-meta">
-            <strong>Location:</strong> {done.name}
+            <strong>{t("vol.reg.fPlace")}</strong> {done.name}
             <br />
-            <strong>Local Name:</strong> {done.local_name || "—"}
+            <strong>{t("vol.reg.fLocal")}</strong> {done.local_name || "—"}
             <br />
-            <strong>Coordinates:</strong> {done.lat.toFixed(6)},{" "}
+            <strong>{t("vol.reg.fCoords")}</strong> {done.lat.toFixed(6)},{" "}
             {done.lon.toFixed(6)}
+            {done.gps_accuracy_m != null && <> (±{Math.round(done.gps_accuracy_m)} m)</>}
             <br />
-            <strong>QR Code:</strong> {done.code}
+            {done.code && (
+              <>
+                <strong>{t("vol.reg.fCode")}</strong> {done.code}
+              </>
+            )}
             {pathSaved && (
               <>
                 <br />
-                <strong>Verified path:</strong> saved ({waypoints.length}{" "}
-                samples)
+                <strong>{t("vol.reg.fPath")}</strong>{" "}
+                {t(pathSaved === "sent" ? "vol.reg.pathSent" : "vol.reg.pathQueued", { n: waypoints.length })}
               </>
             )}
           </p>
 
-          <p className="field-hint no-print">
-            Path turns a corner? Register another board at the corner and record
-            that walk too.
-          </p>
+          {formError && <p className="gps-status err">{formError}</p>}
 
-          <div className="volunteer-qr-print" id="volunteer-print-area">
-            <QRCodeCanvas
-              id="volunteer-location-qr-canvas"
-              value={locationBoardLink(done.code, phoneOrigin)}
-              size={280}
-              level="M"
-              includeMargin
-              bgColor="#ffffff"
-              fgColor="#14201c"
-            />
-            <p className="print-title">{done.name}</p>
-            <p className="print-sub">
-              {done.local_name ? `${done.local_name} · ` : ""}
-              {done.code}
-            </p>
-            <p className="print-hint">Scan to start navigation</p>
-            <p
-              className="print-sub no-print"
-              style={{ fontSize: "0.7rem", wordBreak: "break-all" }}
-            >
-              {locationBoardLink(done.code, phoneOrigin)}
-            </p>
-          </div>
+          <p className="field-hint">{t("vol.reg.cornerHint")}</p>
 
-          <div className="volunteer-actions no-print">
-            <button type="button" className="btn primary" onClick={printQr}>
-              Print QR
-            </button>
-            <button
-              type="button"
-              className="btn secondary"
-              onClick={() => savePng(done)}
-            >
-              Save QR
-            </button>
-            <button type="button" className="btn soft" onClick={onBack}>
-              ← Back
+          <div className="volunteer-actions">
+            <button type="button" className="btn primary" onClick={onBack}>
+              ← {t("vol.back")}
             </button>
           </div>
         </div>
@@ -473,53 +461,43 @@ export function VolunteerRegisterForm({
     );
   }
 
-  const coordsReady =
-    Number.isFinite(Number.parseFloat(latText)) &&
-    Number.isFinite(Number.parseFloat(lonText));
-  // Rough box around Nashik city, Trimbakeshwar and the outer parkings.
-  const outsideNashik =
-    coordsReady &&
-    !(
-      Number.parseFloat(latText) >= 19.8 &&
-      Number.parseFloat(latText) <= 20.2 &&
-      Number.parseFloat(lonText) >= 73.4 &&
-      Number.parseFloat(lonText) <= 74.0
-    );
-
   return (
     <section className="screen flow volunteer-screen">
       <header className="volunteer-head">
-        <button type="button" className="back" onClick={onBack}>
+        <button type="button" className="back" onClick={onBack} aria-label={t("vol.back")}>
           ←
         </button>
         <div>
-          <h2>Register a Kumbh place</h2>
-          <p>Ghat, akhara, camp, or gate — then walk the mela lane</p>
+          <h2>{t("vol.reg.title")}</h2>
+          <p>{t("vol.reg.subtitle")}</p>
         </div>
       </header>
 
       <form className="volunteer-form" onSubmit={onSubmit}>
+        {placesFromPhone && (
+          <p className="field-hint">{t("vol.reg.offlinePlaces")}</p>
+        )}
         <label>
-          Official Kumbh place
+          {t("vol.reg.official")}
           <select
             value={official?.id ?? ""}
             onChange={(e) => chooseOfficial(e.target.value)}
             disabled={recording}
           >
-            <option value="">Other place…</option>
+            <option value="">{t("vol.reg.otherPlace")}</option>
             {SITE_CATEGORIES.map((c) => {
               const places = OFFICIAL_PLACES.filter(
                 (p) => siteCategory(p.node_type) === c.id
               );
               if (places.length === 0) return null;
               return (
-                <optgroup key={c.id} label={c.label}>
+                <optgroup key={c.id} label={t(`cat.${c.id}` as MessageKey)}>
                   {places.map((p) => {
                     const taken = registeredNames.has(p.name.toLowerCase());
                     return (
                       <option key={p.id} value={p.id} disabled={taken}>
                         {p.name} — {p.local_name}
-                        {taken ? " (already added)" : ""}
+                        {taken ? t("vol.reg.alreadyAdded") : ""}
                       </option>
                     );
                   })}
@@ -528,143 +506,117 @@ export function VolunteerRegisterForm({
             })}
           </select>
         </label>
-        <p className="field-hint">
-          Pick an official place to fill the details, or choose “Other place”
-          for lane corners, camps, and help desks.
-        </p>
+        <p className="field-hint">{t("vol.reg.officialHint")}</p>
 
         <label>
-          Place name
+          {t("vol.reg.placeName")}
           <input
             value={locationName}
             onChange={(e) => setLocationName(e.target.value)}
-            placeholder="e.g. Ram Kund Ghat"
+            placeholder={t("vol.reg.placeNameEg")}
             readOnly={!!official}
             required
           />
         </label>
 
         <label>
-          Kind of place
+          {t("vol.reg.kind")}
           <select
             value={placeKind}
             onChange={(e) => setPlaceKind(e.target.value)}
             disabled={!!official}
           >
-            <option value="ghat">Ghat</option>
-            <option value="akhara">Akhara</option>
-            <option value="tent_city">Tent city</option>
-            <option value="medical">Medical camp</option>
-            <option value="toilet">Toilet block</option>
-            <option value="parking">Parking</option>
-            <option value="lost_found">Lost and found</option>
-            <option value="transport">Transport hub</option>
-            <option value="help">Help desk</option>
-            <option value="junction">Lane corner</option>
-            <option value="landmark">Other landmark</option>
+            {PLACE_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {t(`vol.reg.kind.${k}`)}
+              </option>
+            ))}
           </select>
         </label>
 
         <label>
-          Local name
+          {t("vol.reg.localName")}
           <input
             value={localName}
             onChange={(e) => setLocalName(e.target.value)}
-            placeholder="e.g. राम कुंड"
+            placeholder={t("vol.reg.localNameEg")}
             required
           />
         </label>
 
-        <div className="coord-block">
-          <p className="section-label">
-            {official
-              ? "Official coordinates"
-              : "Coordinates of this place"}
-          </p>
-          {!official && (
-            <p className="field-hint">
-              Type the latitude and longitude, or tap{" "}
-              <strong>Use my live location</strong> while standing at the place.
-              Your phone will ask for location permission.
-            </p>
-          )}
-          {official && offsetFromOfficialM != null && (
-            <p
-              className={`gps-status ${offsetFromOfficialM > 150 ? "err" : "ok"}`}
-            >
-              {offsetFromOfficialM > 150
-                ? `You are ${Math.round(offsetFromOfficialM)} m from ${official.name}. Put the board up at the place itself before saving.`
-                : `✓ You are ${Math.round(offsetFromOfficialM)} m from the official point`}
-            </p>
-          )}
-          {useLive && gps.status === "loading" && (
-            <p className="gps-status">Getting your current location…</p>
-          )}
-          {useLive && !official && gps.status === "ok" && (
-            <p className="gps-status ok">✓ Filled from your live location</p>
-          )}
-          {useLive && gps.status === "error" && (
-            <p className="gps-status err">{gps.message}</p>
-          )}
-
-          <div className="coord-fields">
-            <label>
-              Latitude
-              <input
-                inputMode="decimal"
-                value={latText}
-                onChange={(e) => typeCoordinate(setLatText, e.target.value)}
-                placeholder="e.g. 19.997500"
-                readOnly={!!official}
-                required
-              />
-            </label>
-            <label>
-              Longitude
-              <input
-                inputMode="decimal"
-                value={lonText}
-                onChange={(e) => typeCoordinate(setLonText, e.target.value)}
-                placeholder="e.g. 73.789800"
-                readOnly={!!official}
-                required
-              />
-            </label>
+        {nearbyMapPlaces.length > 0 && (
+          <div className="map-confirm">
+            <p className="section-label">{t("vol.reg.onMap")}</p>
+            <p className="field-hint">{t("vol.reg.onMapHint")}</p>
+            {nearbyMapPlaces.map(({ place, distM }) => {
+              const picked = place.code === chosenMapPlace?.code;
+              return (
+                <button
+                  key={place.code}
+                  type="button"
+                  className={`btn soft block ${picked ? "picked" : ""}`}
+                  aria-pressed={picked}
+                  onClick={() => {
+                    setConfirmCode(picked ? "" : place.code);
+                    if (!picked && !official) setLocationName(place.name);
+                    if (!picked && !official && !localName && place.local_name) {
+                      setLocalName(place.local_name);
+                    }
+                  }}
+                >
+                  {picked ? "✓ " : ""}
+                  {t("vol.reg.thisIs", { name: place.name, dist: formatDistance(distM) })}
+                </button>
+              );
+            })}
           </div>
+        )}
 
-          {outsideNashik && (
-            <p className="gps-status err">
-              These coordinates are outside the Nashik Kumbh area. Check them,
-              or stand at the place and use your live location.
+        <div className="coord-block">
+          <p className="section-label">{t("vol.reg.locLabel")}</p>
+          <p className="field-hint">{t("vol.reg.locHint")}</p>
+          {gps.status === "loading" && <p className="gps-status">{t("vol.reg.gettingLoc")}</p>}
+          {gps.status === "error" && <p className="gps-status err">{gps.message}</p>}
+          {gps.status === "ok" && (
+            <p
+              className={`gps-status ${
+                gps.accuracyM > MAX_REGISTER_ACCURACY_M || outsideNashik ? "err" : "ok"
+              }`}
+            >
+              {outsideNashik
+                ? t("vol.reg.outside")
+                : gps.accuracyM > MAX_REGISTER_ACCURACY_M
+                  ? t("vol.reg.roughShort", { m: Math.round(gps.accuracyM) })
+                  : `✓ ${gps.lat.toFixed(6)}, ${gps.lon.toFixed(6)} · ±${Math.round(gps.accuracyM)} m`}
             </p>
+          )}
+          {official && offsetFromOfficialM != null &&
+            offsetFromOfficialM > officialWarnRadiusM(official) && (
+            <p className="gps-status warn">
+              {t("vol.reg.farFromOfficial", { dist: formatDistance(offsetFromOfficialM), name: official.name })}
+            </p>
+          )}
+          {official && official.coordQuality === "approximate" && (
+            <p className="field-hint">{t("vol.reg.approxOfficial", { name: official.name })}</p>
           )}
 
           <button
             type="button"
             className="btn soft block"
-            onClick={chooseLiveLocation}
-            disabled={(useLive && gps.status === "loading") || recording}
+            onClick={requestGps}
+            disabled={gps.status === "loading" || recording}
           >
-            {useLive && gps.status === "loading"
-              ? "Getting location…"
-              : official
-                ? "Check I am at this place (live location)"
-                : useLive && gps.status === "ok"
-                  ? "Refresh live location"
-                  : "Use my live location"}
+            {gps.status === "loading" ? t("vol.reg.gettingLocBtn") : t("vol.reg.refreshLoc")}
           </button>
         </div>
 
         {existingPlaces.length > 0 && (
           <div className="coord-block path-route-block">
-            <p className="section-label">Record path (start → destination)</p>
-            <p className="field-hint">
-              There is no mela map. Walk the real lane once, around crowds,
-              barricades, and tents. Visitors are guided along that walk.
-            </p>
+            <p className="section-label">{t("vol.reg.recordLabel")}</p>
+            <p className="field-hint">{t("vol.reg.recordHint")}</p>
 
             <label>
-              Starting point
+              {t("vol.reg.start")}
               <select
                 value={connectTo}
                 onChange={(e) => {
@@ -675,7 +627,7 @@ export function VolunteerRegisterForm({
                 required
                 disabled={recording}
               >
-                <option value="">Select starting board…</option>
+                <option value="">{t("vol.reg.selectStart")}</option>
                 {existingPlaces.map((n) => (
                   <option key={n.code} value={n.code}>
                     {n.name}
@@ -686,14 +638,14 @@ export function VolunteerRegisterForm({
             </label>
 
             <label>
-              Destination
+              {t("vol.reg.dest")}
               <input
                 value={
                   locationName.trim()
-                    ? `${locationName.trim()}${
-                        localName.trim() ? ` (${localName.trim()})` : ""
-                      } — new board`
-                    : "Type Destination name above…"
+                    ? t("vol.reg.newPlace", {
+                        name: `${locationName.trim()}${localName.trim() ? ` (${localName.trim()})` : ""}`,
+                      })
+                    : t("vol.reg.typeDest")
                 }
                 readOnly
                 disabled
@@ -703,40 +655,32 @@ export function VolunteerRegisterForm({
             {connectTo && (
               <>
                 <p className="gps-status">
-                  Route: <strong>{connectName}</strong> →{" "}
-                  <strong>
-                    {locationName.trim() || "Destination (new board)"}
-                  </strong>
+                  {t("vol.reg.route", { from: connectName, to: locationName.trim() || t("vol.reg.destNew") })}
                 </p>
                 <p className="field-hint">
-                  1) Stand at <strong>Starting point</strong> ({connectName})
+                  {t("vol.reg.step1", { name: connectName })}
                   <br />
-                  2) Tap <strong>Start recording walk</strong>
+                  {t("vol.reg.step2")}
                   <br />
-                  3) Walk to the <strong>destination</strong> along the real mela lane, around tents and barricades.
+                  {t("vol.reg.step3")}
                   <br />
-                  4) Tap <strong>Stop recording</strong>, check GPS, Submit
+                  {t("vol.reg.step4")}
                 </p>
                 <p className="gps-status">
-                  Compass: {heading.heading.toFixed(0)}° · {heading.note}
+                  {t("vol.reg.compass", { deg: heading.heading.toFixed(0), note: heading.note })}
                   {recording
-                    ? ` · recording (${waypoints.length} samples)`
+                    ? t("vol.reg.recordingN", { n: waypoints.length })
                     : waypoints.length >= 2
-                      ? ` · path ready (${waypoints.length} samples)`
+                      ? t("vol.reg.readyN", { n: waypoints.length })
                       : ""}
                 </p>
-                {!heading.secure && (
-                  <p className="gps-status err">
-                    Needs HTTPS (ngrok) for compass — use phone link with
-                    padlock.
-                  </p>
-                )}
+                {!heading.secure && <p className="gps-status err">{t("vol.reg.compassHttps")}</p>}
                 <button
                   type="button"
                   className="btn soft block"
                   onClick={() => void heading.requestPermission()}
                 >
-                  Enable compass / gyroscope
+                  {t("vol.enableCompass")}
                 </button>
                 {!recording ? (
                   <button
@@ -744,7 +688,7 @@ export function VolunteerRegisterForm({
                     className="btn primary block"
                     onClick={startPathRecording}
                   >
-                    Start recording walk
+                    {t("vol.reg.startRec")}
                   </button>
                 ) : (
                   <button
@@ -752,13 +696,11 @@ export function VolunteerRegisterForm({
                     className="btn secondary block"
                     onClick={stopPathRecording}
                   >
-                    Stop recording ({waypoints.length} samples)
+                    {t("vol.reg.stopRec", { n: waypoints.length })}
                   </button>
                 )}
                 {waypoints.length >= 2 && !recording && (
-                  <p className="gps-status ok">
-                    ✓ Path recorded — obstacles avoided by your walk
-                  </p>
+                  <p className="gps-status ok">{t("vol.reg.recorded")}</p>
                 )}
               </>
             )}
@@ -766,10 +708,7 @@ export function VolunteerRegisterForm({
         )}
 
         {existingPlaces.length === 0 && (
-          <p className="field-hint">
-            First board: no path yet. After this, register the next place and
-            record Starting point → Destination.
-          </p>
+          <p className="field-hint">{t("vol.reg.firstPlace")}</p>
         )}
 
         {formError && <p className="gps-status err">{formError}</p>}
@@ -777,13 +716,13 @@ export function VolunteerRegisterForm({
         <button
           type="submit"
           className="btn primary block"
-          disabled={submitting || !coordsReady || recording}
+          disabled={submitting || gps.status !== "ok" || recording}
         >
           {submitting
-            ? "Saving…"
+            ? t("vol.saving")
             : existingPlaces.length > 0
-              ? "Save destination + recorded path"
-              : "Save destination"}
+              ? t("vol.reg.saveWithPath")
+              : t("vol.reg.save")}
         </button>
       </form>
     </section>
