@@ -30,7 +30,7 @@ phones, the Mela authority, a lawyer and a server.
 
 | Test | Status | Notes |
 |---|---|---|
-| Automated (phone logic, API, browser smoke under the production CSP) | ✅ | 217 phone-logic checks, 218 API checks (SQLite; 216 on Postgres), 30 browser checks (`TESTING_AND_QA.md`) |
+| Automated (phone logic, API, browser smoke under the production CSP) | ✅ | 240 phone-logic checks, 225 API checks (SQLite; 223 on Postgres), 31 browser checks (`TESTING_AND_QA.md`) |
 | End-to-end plan (20 scenarios) | ✅ written, 🟡 partly run | [E2E_TEST_PLAN.md](E2E_TEST_PLAN.md): which are automated, simulated, remote review, device or field |
 | **Real phones** (Android Chrome, iOS Safari, installed PWA) | ❌ | GPS, compass, storage eviction, service worker, `tel:` links, vibration |
 | **Field** (on site in Nashik) | ❌ | GPS in crowds and near water; walkability; QR boards in daylight |

@@ -24,13 +24,13 @@ Nothing has been deployed. The work is committed on `kunal-offline-map-integrati
 | Backups | `deploy/backup.sh` (nightly `pg_dump`, 14 days); **restore tested** on Postgres 16 |
 | Security | Access review (45 endpoints, 4 roles), public data minimised, size limits, sign-in limits per account and per network address, tightened CSP tested in the browser, no third parties (`SECURITY_AND_PRIVACY.md`) |
 | Visitor safety | QR boards, facility status with expiry, SOS with truthful states and an operator console, lost-person cases (off until approved), offline "Ask Setu" with emergencies first, operations summary |
-| Tests | 217 phone-logic + 218 API checks (SQLite; 216 on Postgres) + 30 browser checks under the production CSP + migration check; no network needed (`TESTING_AND_QA.md`, `E2E_TEST_PLAN.md`) |
+| Tests | 240 phone-logic + 225 API checks (SQLite; 223 on Postgres) + 31 browser checks under the production CSP + migration check; no network needed (`TESTING_AND_QA.md`, `E2E_TEST_PLAN.md`) |
 
 ## Needed from the owner
 
 | # | Item | Notes |
 |---|---|---|
-| 1 | **Push / merge** | The work is committed on `kunal-offline-map-integration`; pushing, a pull request and merging wait for the owner. Also decide whether to commit the offline map `frontend/public/map/` (about 15 MB; not in git today; Git LFS optional), so deployments don't depend on downloading it again (item 2) |
+| 1 | **Push / merge** | The work is committed and pushed on `kunal-offline-map-integration`; a pull request and merging wait for the owner. Also decide whether to commit the offline map `frontend/public/map/` (about 15 MB; not in git today; Git LFS optional), so deployments don't depend on downloading it again (item 2) |
 | 2 | **Server** | 2 vCPU / 4 GB RAM / 40 GB disk is plenty for the pilot (an estimate, not load-tested). Ubuntu with Docker, **plus Node 20 and npm** for the offline map step. Indian region preferred (latency, data residency). **The offline map:** `npm run map:fetch` downloads Protomaps build `20261029`, which is pinned in `frontend/scripts/fetchOfflineMap.ts`. Protomaps doesn't keep daily builds forever, so by deploy time it may fail. Then either copy `frontend/public/map/` from the development machine (`rsync`, about 15 MB), or run `npm run map:fetch latest` (a newer map: check the tiles; phones download the map again) |
 | 3 | **Domain** | DNS A record to the server; Caddy gets the certificate automatically |
 | 4 | **Secrets** | In `deploy/.env`: `SETU_DOMAIN`, `ACME_EMAIL`, `POSTGRES_PASSWORD`, and a random `SECRET_KEY` of at least 32 characters (the command in `.env.example` gives 64). CORS is set automatically from `SETU_DOMAIN` |

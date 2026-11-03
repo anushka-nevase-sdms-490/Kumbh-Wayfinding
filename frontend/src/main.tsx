@@ -37,8 +37,20 @@ class ErrorBoundary extends Component<
             color: "#14201c",
           }}
         >
-          <h1 style={{ marginTop: 0 }}>Kumbh Wayfinding hit an error</h1>
-          <p>Open DevTools (F12) → Console for details.</p>
+          {/* For pilgrims, in all three languages (the language settings may be what failed). */}
+          <h1 style={{ marginTop: 0 }}>Something went wrong</h1>
+          <p>Please reload the app. In an emergency call 112 (ambulance 108).</p>
+          <p lang="hi">कुछ गड़बड़ हुई। ऐप दोबारा खोलें। आपात स्थिति में 112 (एम्बुलेंस 108) पर कॉल करें।</p>
+          <p lang="mr">काहीतरी चुकलं. ॲप पुन्हा उघडा. आपत्कालीन स्थितीत 112 (रुग्णवाहिका 108) वर कॉल करा.</p>
+          <p>
+            <button type="button" onClick={() => window.location.reload()} style={{ padding: "12px 20px", fontSize: 16 }}>
+              Reload · दोबारा खोलें · पुन्हा उघडा
+            </button>{" "}
+            <a href="tel:112" style={{ padding: "12px 8px", fontSize: 16 }}>
+              Call 112
+            </a>
+          </p>
+          <p style={{ fontSize: 13, opacity: 0.7 }}>Details for the Setu team:</p>
           <pre
             style={{
               whiteSpace: "pre-wrap",
@@ -49,9 +61,6 @@ class ErrorBoundary extends Component<
           >
             {this.state.error.message}
           </pre>
-          <button type="button" onClick={() => window.location.reload()}>
-            Reload
-          </button>
         </div>
       );
     }

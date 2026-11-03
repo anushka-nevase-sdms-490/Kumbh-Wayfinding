@@ -335,7 +335,8 @@ def import_places(db: Session, places: list[OsmPlace], *, prune: bool = False) -
         if not is_osm_place_code(code) or code in seen:
             continue
         report.missing.append(code)
-        if not prune or row.gps_accuracy_m is not None or row.verification in REVIEWED:
+        if not prune or row.gps_accuracy_m is not None or row.verification in REVIEWED or row.board_code:
+            # A place with a printed board stays: deleting it would break the board.
             continue
         lanes = (
             db.query(Edge)

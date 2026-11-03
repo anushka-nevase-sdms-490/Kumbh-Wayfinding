@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { authFetch } from "../lib/auth";
 import { formatDistance } from "../lib/nearest";
 import { haversineM } from "../lib/types";
@@ -14,6 +14,9 @@ type Report = {
   created_at: string;
   reporters: number;
   distance_m: number | null;
+  street?: string | null;
+  near_name?: string | null;
+  near_m?: number | null;
 };
 
 type Props = { apiBase: string; onSaved: () => void };
@@ -33,7 +36,10 @@ export function VisitorReports({ apiBase, onSaved }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const { t } = useI18n();
 
+  // Two loads can overlap (at once, then with the position): only the newest answer counts.
+  const seq = useRef(0);
   const load = useCallback(async (pos?: GeolocationPosition) => {
+    const mine = ++seq.current;
     try {
       // The volunteer's position stays on the phone (never in a URL, which
       // servers log): distances are worked out here.
@@ -48,6 +54,7 @@ export function VisitorReports({ apiBase, onSaved }: Props) {
         distance_m: pos ? haversineM(pos.coords.latitude, pos.coords.longitude, r.lat, r.lon) : null,
       }));
       if (pos) list.sort((a, b) => (a.distance_m ?? 0) - (b.distance_m ?? 0));
+      if (mine !== seq.current) return;
       setReports(list);
       setErr(null);
     } catch {
@@ -56,17 +63,24 @@ export function VisitorReports({ apiBase, onSaved }: Props) {
   }, [apiBase, t]);
 
   useEffect(() => {
-    // Nearest first when the phone knows where it is; otherwise newest first.
-    if (!volunteerGeo.available()) {
-      void load();
-      return;
-    }
+    // Show the list at once (newest first); when the phone knows where it is,
+    // load again nearest first. Waiting for GPS used to hide it for seconds.
+    void load();
+    if (!volunteerGeo.available()) return;
     volunteerGeo.getCurrentPosition(
       (pos) => void load(pos),
-      () => void load(),
+      () => undefined,
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
     );
   }, [load]);
+
+  // Map roads join hidden junctions ("road junction"): name the street and the nearest place instead.
+  const laneName = (r: Report) =>
+    r.from_name === "road junction" && r.to_name === "road junction"
+      ? [r.street || t("vol.obstacle.mapRoad"),
+          r.near_name ? t("vol.reports.near", { place: r.near_name, dist: formatDistance(r.near_m ?? 0) }) : ""]
+          .filter(Boolean).join(" · ")
+      : `${r.from_name} ↔ ${r.to_name}`;
 
   async function act(r: Report, action: "confirm" | "reject", hours?: number | null) {
     setBusyId(r.id);
@@ -101,9 +115,7 @@ export function VisitorReports({ apiBase, onSaved }: Props) {
       {err && <p className="gps-status err">{err}</p>}
       {reports.map((r) => (
         <div key={r.id} className="report-card">
-          <strong>
-            {r.from_name} ↔ {r.to_name}
-          </strong>
+          <strong>{laneName(r)}</strong>
           <small>
             {t(r.reporters > 1 ? "vol.reports.many" : "vol.reports.one", { n: r.reporters, min: minutesAgo(r.created_at) })}
             {r.distance_m != null ? t("vol.reports.away", { dist: formatDistance(r.distance_m) }) : ""}

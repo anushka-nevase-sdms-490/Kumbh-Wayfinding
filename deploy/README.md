@@ -63,6 +63,10 @@ curl -s  https://$SETU_DOMAIN/api/pack/latest                     # version info
 Then on a phone: open the site, add it to the home screen, tap **Download
 offline map**, switch on airplane mode, and check the app, map and route still work.
 
+### QR boards
+
+Print boards from the public site (`https://<SETU_DOMAIN>`): a board's QR code holds the address of the page it was printed from. A build for another host can set `VITE_PUBLIC_ORIGIN=https://<SETU_DOMAIN>` so boards always point to the public site; the admin screen warns when a board would point to a test address (localhost, a private IP, ngrok).
+
 ## Backups
 
 `deploy/backup.sh` dumps the database (kept 14 days). Run it nightly from cron

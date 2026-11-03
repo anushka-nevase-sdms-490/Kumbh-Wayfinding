@@ -115,7 +115,7 @@ export const hi: Messages = {
   "nr.pickAnother": "दूसरी जगह चुनें",
   "nr.clearBlocks": "अस्थायी रुकावटें हटाएँ और फिर कोशिश करें",
 
-  "guide.toGo": "अभी {dist}",
+  "guide.toGo": "{dist} बाकी",
   "guide.eta": "लगभग {min} मिनट",
   "guide.rerouting": " · नया रास्ता खोज रहे हैं",
   "guide.next": "आगे:",

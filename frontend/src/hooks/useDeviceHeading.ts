@@ -56,6 +56,10 @@ export function useDeviceHeading() {
 
   const [heading, setHeading] = useState(0);
   const [source, setSource] = useState<Source>("none");
+  // A real compass (absolute orientation or iOS) has been read: headings point
+  // to true north. Relative orientation or the gyro alone start from wherever
+  // the phone happened to point.
+  const [north, setNorth] = useState(false);
   const [note, setNote] = useState(secure ? LABEL.none : INSECURE_NOTE);
 
   const sourceRef = useRef<Source>("none");
@@ -116,6 +120,7 @@ export function useDeviceHeading() {
       if (compassDeg == null) return;
 
       lastCompassRef.current = compassDeg;
+      setNorth(true);
       // Complementary filter: pull fused heading gently toward compass north.
       const delta = shortestDelta(fusedRef.current, compassDeg);
       fusedRef.current = norm360(fusedRef.current + delta * COMPASS_BLEND);
@@ -198,6 +203,7 @@ export function useDeviceHeading() {
   return {
     heading,
     live: RANK[source] > RANK.manual,
+    north,
     secure,
     note,
     requestPermission,

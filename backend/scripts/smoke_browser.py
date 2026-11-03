@@ -63,6 +63,8 @@ JS = r"""
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const btn = (t) => [...document.querySelectorAll("button")].find((b) => b.textContent.includes(t));
 const click = async (t, wait = 600) => { const b = btn(t); if (!b) throw new Error("no button: " + t); b.click(); await sleep(wait); };
+// The phone remembers "I am a visitor" after the first time: tap it only when the choice is shown.
+const visitor = async (wait = 1000) => { await waitFor(() => btn('I am a visitor') || btn('Find my way')); if (btn('I am a visitor')) await click('I am a visitor', wait); else await sleep(wait); };
 const waitFor = async (fn, ms = 15000) => { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(250); } return null; };
 const setInput = (el, v) => { const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, "value").set.call(el, v); el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true })); };
 const text = () => document.body.innerText;
@@ -200,7 +202,7 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
     # 1. First visit: app shell, places saved on the phone.
     r = run(chrome, """
       await waitFor(() => btn('I am a visitor'));
-      await click('I am a visitor', 1500);
+      await visitor(1500);
       const status = await waitFor(() => document.querySelector('.pack-status')?.textContent.includes('Offline data') && document.querySelector('.pack-status').textContent);
       const sw = await navigator.serviceWorker.ready.then(() => true);
       return { status, sw };
@@ -220,15 +222,15 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
     chrome.offline(True)
     chrome.goto(APP + "/", settle_s=3)
     r = run(chrome, """
-      await waitFor(() => btn('I am a visitor'));
-      await click('I am a visitor', 1200);
+      const gateSkipped = !!(await waitFor(() => btn('Find my way'))) && !btn('I am a visitor');
       await click('Find my way', 1500);
       await click('Ramkund Ghat', 1000);
       await click('Kalaram Mandir', 3500);
       return { top: document.querySelector('.topbar')?.innerText || '', now: document.querySelector('.guide-now')?.textContent || '',
-               map: !!document.querySelector('.maplibregl-canvas') };
+               map: !!document.querySelector('.maplibregl-canvas'), gateSkipped };
     """)
     check(r and "to go" in r["top"] and r["map"], f"airplane mode: route Ramkund → Kalaram with the map ({r and r['top'].replace(chr(10), ' | ')})")
+    check(r and r["gateSkipped"], "the phone remembers 'I am a visitor': the next visit opens the visitor home directly")
     chrome.offline(False)
     check(servers.start(), "servers back up")
 
@@ -237,18 +239,18 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
     r = run(chrome, """
       await waitFor(() => btn('हिंदी'));
       await click('हिंदी', 600);
-      const hi = text().includes('मैं');
+      const hi = text().includes('मेरा रास्ता खोजें');  // the visitor home's button, not the gate
       await click('English', 400);
       return hi;
     """)
-    check(r, "language switch: the start screen changes to Hindi and back")
+    check(r, "language switch: the visitor home changes to Hindi and back")
 
     # 4b. "Ask Setu" (Phase 7): offline answers from the saved data.
     servers.stop()
     chrome.offline(True)
     chrome.goto(APP + "/", settle_s=3)
     r = run(chrome, """
-      await click('I am a visitor', 1000);
+      await visitor(1000);
       await click('Ask Setu', 1200);
       await click('Medical help', 800);
       const ans = document.querySelector('.ask-answer')?.innerText || '';
@@ -279,11 +281,11 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
     chrome.offline(True)
     run(chrome, "localStorage.setItem('setu-pack-confirmed', '2026-01-01T00:00:00Z'); return 1;")
     chrome.goto(APP + "/", settle_s=3)
-    stale = run(chrome, "await click('I am a visitor', 1000); return [...document.querySelectorAll('.pack-status.warn')].map((p) => p.innerText).join(' ');") or ""
+    stale = run(chrome, "await visitor(1000); return [...document.querySelectorAll('.pack-status.warn')].map((p) => p.innerText).join(' ');") or ""
     chrome.offline(False)
     check(servers.start(), "servers back up")
     chrome.goto(APP + "/", settle_s=5)
-    fresh = run(chrome, "await click('I am a visitor', 1000); return [...document.querySelectorAll('.pack-status.warn')].map((p) => p.innerText).join(' ');") or ""
+    fresh = run(chrome, "await visitor(1000); return [...document.querySelectorAll('.pack-status.warn')].map((p) => p.innerText).join(' ');") or ""
     check("Lanes may have closed since" in stale and "Lanes may have closed since" not in fresh,
           f"stale data: warned offline ('{stale[:60]}'), cleared once the server confirms it")
 
@@ -353,7 +355,7 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
 
     chrome.goto(APP + "/", settle_s=2.5)
     r = run(chrome, f"""
-      await click('I am a visitor', 1000);
+      await visitor(1000);
       await click('Find my way', 1500);
       const input = document.querySelector('#board-code');
       setInput(input, 'zzzzz'); input.closest('form').requestSubmit(); await sleep(500);
@@ -379,7 +381,7 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
     chrome.offline(True)
     chrome.goto(APP + "/", settle_s=3)
     r = run(chrome, """
-      await click('I am a visitor', 1000);
+      await visitor(1000);
       await click('Need help?', 1500);
       await click('Medical help', 300);
       setInput(document.querySelector('.sos-note textarea'), 'smoke test: dizzy near the steps');
@@ -399,6 +401,8 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
     # 7. Volunteer: a place and its walk saved with no network, sent once back online.
     chrome.goto(APP + "/", settle_s=2.5)
     r = run(chrome, f"""
+      // The phone remembers "visitor": the back arrow on the visitor home brings the choice back.
+      if (!btn('I am a volunteer')) {{ document.querySelector('button[aria-label="Back"]')?.click(); await sleep(800); }}
       await click('I am a volunteer', 1000);
       setInput(document.querySelector('input[type="tel"]'), '{phone}');
       setInput(document.querySelector('input[inputmode="numeric"]'), '{pin}');
@@ -463,7 +467,7 @@ def smoke_steps(chrome: Chrome, servers: Servers, db_path, phone, pin):
     # The visitor's phone now shows the operator's confirmation.
     chrome.goto(APP + "/", settle_s=2.5)
     r = run(chrome, """
-      await click('I am a visitor', 1000);
+      await visitor(1000);
       await click('Need help?', 1500);
       window.dispatchEvent(new Event('online'));
       return await waitFor(() => /An operator confirmed/.test(document.querySelector('.sos-item')?.innerText || '') && document.querySelector('.sos-item').innerText, 30000) || document.querySelector('.sos-item')?.innerText;

@@ -380,14 +380,19 @@ def set_edge_status(
     """Mark a corridor blocked, closed door, glass barrier, etc. Pack rebuilds offline."""
     a = body.from_code.strip().upper()
     b = body.to_code.strip().upper()
-    edge = (
-        db.query(Edge)
-        .filter(
-            ((Edge.from_code == a) & (Edge.to_code == b))
-            | ((Edge.from_code == b) & (Edge.to_code == a))
+    if body.lane_id is not None:
+        edge = db.get(Edge, body.lane_id)
+        if edge is not None and {edge.from_code, edge.to_code} != {a, b}:
+            edge = None
+    else:
+        edge = (
+            db.query(Edge)
+            .filter(
+                ((Edge.from_code == a) & (Edge.to_code == b))
+                | ((Edge.from_code == b) & (Edge.to_code == a))
+            )
+            .first()
         )
-        .first()
-    )
     if not edge:
         raise HTTPException(404, "No link between those boards")
 
@@ -419,6 +424,11 @@ def set_edge_status(
             edge.cost_mult = max(edge.cost_mult or 1.0, 1.3)
     if body.walkable is not None:
         edge.walkable = body.walkable
+    if (body.blocked is False or body.walkable is True) and body.passage_kind is None \
+            and edge.passage_kind in ("wall", "glass_wall"):
+        # Reopening a lane someone marked as a wall: phones treat a wall as
+        # impassable, so it must stop being one (the reopen buttons send no kind).
+        edge.passage_kind = "corridor"
     edge.updated_by = vol.id
     what = []
     if body.blocked is not None:

@@ -583,6 +583,13 @@
   body * {
     visibility: hidden;
   }
+  /* The screen's entry animation leaves a transform, which would make the
+     board's position:fixed relative to the screen (and add blank pages). */
+  .screen,
+  .flow {
+    animation: none !important;
+    transform: none !important;
+  }
   .print-board,
   .print-board * {
     visibility: visible;

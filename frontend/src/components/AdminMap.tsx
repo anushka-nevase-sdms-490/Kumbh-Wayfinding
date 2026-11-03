@@ -36,6 +36,7 @@ type AdminLane = {
   blocked: boolean;
   blocked_until: string | null;
   door_state: string;
+  passage_kind?: string;
   obstacle_note: string | null;
   name: string | null;
   distance_m: number;
@@ -55,8 +56,13 @@ type Props = { apiBase: string; onBack: () => void; onSaved: () => void };
 
 type LaneKind = "walked" | "reviewed" | "map" | "off";
 
+/** A lane marked as a wall: phones never route through it (lib/router.ts). */
+function isWall(l: AdminLane): boolean {
+  return ["wall", "glass_wall"].includes((l.passage_kind ?? "").toLowerCase());
+}
+
 function laneKind(l: AdminLane): LaneKind {
-  if (l.blocked || !l.walkable || l.door_state === "closed" || l.verification === "rejected") return "off";
+  if (isWall(l) || l.blocked || !l.walkable || l.door_state === "closed" || l.verification === "rejected") return "off";
   if (l.verification === "volunteer_verified" || l.verification === "officially_verified") return "walked";
   return l.verification === "remotely_reviewed" ? "reviewed" : "map";
 }
@@ -89,6 +95,8 @@ export function AdminMap({ apiBase, onBack, onSaved }: Props) {
   const [reportId, setReportId] = useState<number | null>(null);
   const [placeCode, setPlaceCode] = useState<string | null>(null);
   const [note, setNote] = useState("");
+  // The "Why?" note belongs to the card it was typed on: a new card starts empty.
+  useEffect(() => setNote(""), [laneId, placeCode]);
   const [busy, setBusy] = useState(false);
   const [focus, setFocus] = useState<{ lat: number; lon: number; key: string } | null>(null);
 
@@ -320,7 +328,7 @@ export function AdminMap({ apiBase, onBack, onSaved }: Props) {
             {lane.obstacle_note ? ` · ${lane.obstacle_note}` : ""}
           </small>
           <div className="report-actions">
-            {(lane.blocked || lane.door_state === "closed") && (
+            {(lane.blocked || lane.door_state === "closed" || isWall(lane)) && (
               <button
                 type="button"
                 className="btn primary"
@@ -329,6 +337,7 @@ export function AdminMap({ apiBase, onBack, onSaved }: Props) {
                   void post("/api/volunteer/edge-status", {
                     from_code: lane.from_code,
                     to_code: lane.to_code,
+                    lane_id: lane.id,
                     blocked: false,
                     walkable: true,
                     door_state: lane.door_state === "closed" ? "open" : lane.door_state,
@@ -348,6 +357,7 @@ export function AdminMap({ apiBase, onBack, onSaved }: Props) {
                   void post("/api/volunteer/edge-status", {
                     from_code: lane.from_code,
                     to_code: lane.to_code,
+                    lane_id: lane.id,
                     walkable: !lane.walkable,
                   })
                 }

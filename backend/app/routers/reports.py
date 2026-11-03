@@ -5,8 +5,9 @@ volunteer confirms it on the spot, which blocks the lane for a few hours.
 """
 import hashlib
 from datetime import datetime, timedelta
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from sqlalchemy.orm import Session
 
 from ..auth import require_volunteer
@@ -15,6 +16,11 @@ from ..audit import audit
 from ..db import BlockReport, Edge, QrNode, Volunteer, get_db
 from ..schemas import BlockReportCreate, BlockReportOut, ConfirmReportRequest
 from ..services.pack_builder import ensure_current_pack, expire_blocks, haversine_m
+from ..services.osm_network import is_network_junction_code
+from ..verification import REJECTED
+
+# A database id from the URL: larger values are refused (422), not a 500.
+RowId = Annotated[int, Path(ge=1, le=2_147_483_647)]
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -115,6 +121,7 @@ def list_reports(
     for r in rows:
         by_edge.setdefault(r.edge_id, []).append(r)
     names = {n.code: n for n in db.query(QrNode).all()}
+    landmarks = [n for n in names.values() if not is_network_junction_code(n.code) and n.verification != REJECTED]
     out = []
     for edge_id, reports in by_edge.items():
         edge = db.get(Edge, edge_id)
@@ -124,6 +131,7 @@ def list_reports(
         if a is None or b is None:
             continue
         mid_lat, mid_lon = (a.lat + b.lat) / 2, (a.lon + b.lon) / 2
+        near = min(landmarks, key=lambda n: haversine_m(mid_lat, mid_lon, n.lat, n.lon), default=None)
         newest = reports[0]
         out.append(
             BlockReportOut(
@@ -141,6 +149,9 @@ def list_reports(
                 distance_m=(
                     round(haversine_m(lat, lon, mid_lat, mid_lon)) if lat is not None and lon is not None else None
                 ),
+                street=edge.name,
+                near_name=near.name if near else None,
+                near_m=round(haversine_m(mid_lat, mid_lon, near.lat, near.lon)) if near else None,
             )
         )
     out.sort(key=lambda r: (r.distance_m is None, r.distance_m or 0, -r.created_at.timestamp()))
@@ -165,7 +176,7 @@ def _resolve(db: Session, report_id: int, status: str, vol: Volunteer) -> tuple[
 
 @router.post("/{report_id}/confirm")
 def confirm_report(
-    report_id: int,
+    report_id: RowId,
     body: ConfirmReportRequest,
     db: Session = Depends(get_db),
     vol: Volunteer = Depends(require_volunteer),
@@ -185,7 +196,7 @@ def confirm_report(
 
 @router.post("/{report_id}/reject")
 def reject_report(
-    report_id: int,
+    report_id: RowId,
     db: Session = Depends(get_db),
     vol: Volunteer = Depends(require_volunteer),
 ):

@@ -415,6 +415,8 @@ with TestClient(app) as anon, TestClient(app, headers=VOL2) as vc:
     listed = vc.get("/api/reports", params={"lat": 20.005, "lon": 73.79}).json()
     check(len(listed) == 1 and listed[0]["reporters"] == 2 and listed[0]["distance_m"] is not None,
           "volunteer sees one entry for the lane: 2 phones, with its distance")
+    check(listed[0]["street"] == "MG Road" and listed[0]["near_name"] and listed[0]["near_m"] is not None,
+          f"a report on a map road names its street and the nearest place ({listed[0].get('street')}, near {listed[0].get('near_name')})")
     rid = listed[0]["id"]
     r = vc.post(f"/api/reports/{rid}/confirm", json={"hours": 1})
     e = next(x for x in c.get("/api/edges").json() if {x["from_code"], x["to_code"]} == set(lane))
@@ -653,6 +655,51 @@ with TestClient(app, headers=ADMIN) as c:
           "a recorded walk does not reopen a closed lane (reopening is its own decision)")
     c.post("/api/volunteer/edge-status", json={"from_code": "WLK-A", "to_code": "WLK-B", "blocked": False})
     check(riv_in_pack("WLK-A", "WLK-B"), "reopening the lane explicitly puts it back in the pack")
+    # Review 3: a lane marked as a wall is closed on phones; "Reopen" makes it a corridor again.
+    kind_of = lambda: next(e for e in c.get("/api/edges").json()  # noqa: E731
+                           if {e["from_code"], e["to_code"]} == {"WLK-A", "WLK-B"})["passage_kind"]
+    c.post("/api/volunteer/edge-status", json={"from_code": "WLK-A", "to_code": "WLK-B", "passage_kind": "wall"})
+    was_wall = kind_of() == "wall"
+    c.post("/api/volunteer/edge-status", json={"from_code": "WLK-A", "to_code": "WLK-B", "blocked": False, "walkable": True})
+    check(was_wall and kind_of() == "corridor", "reopening a lane marked as a wall makes it walkable on phones again")
+    # Two lanes between the same places: lane_id changes exactly the one asked for.
+    _db = _Session()
+    twin = _Edge(from_code="WLK-A", to_code="WLK-B", distance_m=70, source="volunteer", verification="unverified")
+    _db.add(twin)
+    _db.commit()
+    twin_id = twin.id
+    _db.close()
+    r = c.post("/api/volunteer/edge-status", json={"from_code": "WLK-A", "to_code": "WLK-B", "lane_id": twin_id, "blocked": True})
+    rows = {e["id"]: e for e in c.get("/api/edges").json() if {e["from_code"], e["to_code"]} == {"WLK-A", "WLK-B"}}
+    check(r.status_code == 200 and rows[twin_id]["blocked"] and not any(e["blocked"] for i, e in rows.items() if i != twin_id),
+          "with two lanes between the same places, lane_id closes exactly the chosen one")
+    wrong = c.post("/api/volunteer/edge-status", json={"from_code": "RIV-P", "to_code": "RIV-S", "lane_id": twin_id, "blocked": True})
+    check(wrong.status_code == 404, f"a lane_id whose ends do not match is refused [{wrong.status_code}]")
+    _db = _Session()
+    _db.delete(_db.get(_Edge, twin_id))
+    _db.commit()
+    _db.close()
+    # Very large ids are refused (422), not a server error.
+    big = 9_223_372_036_854_775_807
+    statuses = [c.post("/api/admin/rollback", json={"release_id": big}).status_code,
+                c.post(f"/api/ops/sos/{big}/ack", json={}).status_code,
+                c.post(f"/api/reports/{big}/confirm", json={}).status_code,
+                c.post("/api/admin/verify", json={"target": "lane", "lane_id": big, "status": "unverified"}).status_code]
+    check(statuses == [422, 422, 422, 422], f"very large ids give 422, not 500 {statuses}")
+    # Old pack files are deleted: only the newest few stay on disk.
+    import glob as _glob  # noqa: E402
+
+    from app.services import pack_builder as _pb  # noqa: E402
+
+    _pb.KEEP_PACK_FILES = 3
+    for i in range(5):
+        c.post("/api/volunteer/edge-status", json={"from_code": "WLK-A", "to_code": "WLK-B", "blocked": i % 2 == 0})
+        c.post("/api/pack/build")
+    files = _glob.glob(os.path.join(_settings.pack_dir, "setu_pack_*.json"))
+    check(len(files) <= 3 and c.get("/api/pack/latest/json").status_code == 200,
+          f"old pack files are deleted (the newest ones stay) [{len(files)} files]")
+    _pb.KEEP_PACK_FILES = 20
+    c.post("/api/volunteer/edge-status", json={"from_code": "WLK-A", "to_code": "WLK-B", "blocked": False})
 
 # Without water data the river checks cannot run: validation must fail, not say OK.
 _empty = os.path.join(_tmp, "osm-empty")
@@ -942,6 +989,23 @@ with TestClient(app, headers=ADMIN) as c, TestClient(app, headers=VOL2) as vc:
         check(len(vers) == 3 and vers[0]["active"], "old versions are pruned (the newest ones and the live one are kept)")
         lane = next(e for e in c.get("/api/edges").json()
                     if {e["from_code"], e["to_code"]} == {lane["from_code"], lane["to_code"]})
+
+        # An admin takes back a river-crossing approval: off phones at once, and a rollback does not bring it back.
+        crossing = next(e for e in c.get("/api/edges").json() if {e["from_code"], e["to_code"]} == {"RIV-N2", "RIV-S2"})
+        on_phones = lambda: any(e["id"] == crossing["id"] for e in pack()["edges"])  # noqa: E731
+        c.post("/api/admin/verify", json={"target": "lane", "lane_id": crossing["id"], "status": "officially_verified"})
+        c.post("/api/admin/publish", json={"note": "crossing approved"})
+        approved_version = c.get("/api/admin/releases").json()["releases"][0]["id"]
+        was_on = on_phones()
+        c.post("/api/admin/verify", json={"target": "lane", "lane_id": crossing["id"], "status": "unverified",
+                                          "note": "GPS jump, not a bridge"})
+        off_at_once = not on_phones()
+        c.post("/api/admin/publish", json={"note": "after"})
+        c.post("/api/admin/rollback", json={"release_id": approved_version})
+        check(was_on and off_at_once and not on_phones(),
+              "a river-crossing approval taken back leaves phones at once, also after a rollback to the approved version"
+              f" [{was_on}, {off_at_once}]")
+        c.post("/api/admin/publish", json={"note": "back to current"})
 
         # Leave the data as it was.
         vc.post("/api/volunteer/edge-status", json={"from_code": lane["from_code"], "to_code": lane["to_code"], "blocked": False})

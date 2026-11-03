@@ -30,10 +30,10 @@
 
   | Suite | Before | After |
   |---|---|---|
-  | Routing and logic tests | 198 | **217** (19 new) |
-  | API checks, SQLite | 200 | **218** (18 new, 2 updated) |
-  | API checks, PostgreSQL | not run at baseline | **216**, all OK |
-  | Browser test (headless Chrome, production security policy) | 30/30 | **30/30** |
+  | Routing and logic tests | 198 | **240** (42 new) |
+  | API checks, SQLite | 200 | **225** (25 new, 2 updated) |
+  | API checks, PostgreSQL | not run at baseline | **223**, all OK |
+  | Browser test (headless Chrome, production security policy) | 30/30 | **31/31** |
   | Type check, lint, build, migration, graph check | pass | pass |
 
 - **Verdict:** ready for the next validation stage, the **field pilot**, from a code point of view. **Not ready for a public launch.** Real-phone tests, field verification of lanes, the lawyer's review, authority approvals and a professional security test are still open (section 14).
@@ -331,13 +331,89 @@ All the changes were reviewed again by a reviewer who had not seen this report. 
 
 ---
 
+## 4d. Fixed after the live run (3 Nov 2026)
+
+The app was then run live in Chrome (visitor, volunteer, operator, admin; simulation for the position; a database copy). These problems were seen and fixed:
+
+| Problem seen live | Fix | Test |
+|---|---|---|
+| Typing a place in **Devanagari** ("कालाराम") found nothing: most names are English-only | `soundKey()`: Devanagari is spelt out in Latin letters and both sides are folded to a loose sound pattern. "कालाराम", "काळाराम मंदिर", "रामकुंड", "सीता गुफा", "गोदावरी", "पंचवटी" now find their places; ordinary matches still come first. Ask Setu uses the same matching | T40 (5 checks) |
+| For "drowning", the nearest help listed an **eye hospital** first | For medical help, hospitals whose name shows a specialty (eye, dental, maternity, children's, heart…) count as 1 km farther: a general hospital nearby comes first (real data: Indira Gandhi Hospital instead of Shraddha Eye Hospital) | T40 (2 checks) |
+| "Is it dangerous to bathe at night?" got "I can only answer…" | Bathing / danger words in en/hi/mr lead to the safety tips (still not to the emergency box) | T40 (3 checks) |
+| The SOS screen opened from Ask Setu with no kind selected | The note suggests the kind (medical / lost / unsafe); the visitor sees it selected and can change it | T40 |
+| The "new way from here" message vanished at once | It stays 15 s | Type check / browser test |
+| The destination list was alphabetical without distances | Nearest first, with the straight-line distance | Browser test |
+| The app asked "visitor or volunteer?" on every visit | The phone remembers "I am a visitor"; the back arrow on the visitor home brings the choice back | Browser test (new step) |
+| Hindi "अभी 413 मी" read as "now 413 m" | "413 मी बाकी" | — |
+
+Not fixed in code (data): OpenStreetMap typos, 13 places named just "Parking", Kalaram Mandir listed twice, which hospitals take emergencies. These need data cleanup in the field pilot; names are never invented in code.
+
+---
+
+## 4e. Third review round (3 Nov 2026, after the live-run fixes)
+
+Three fresh reviews: the live-run fixes, the publishing/admin backend, and the admin/map/offline-download screens.
+
+**Fixed in this round** (6 problems in the live-run fixes, plus 1 backend issue linked to B-30):
+
+| Problem | Fix | Test |
+|---|---|---|
+| Ask Setu: "पार्किंग खुली है?" / "टॉयलेट खुला है?" answered about **one** same-named place far away instead of listing the nearest | A place counts as "named" only if its name is unique and distinctive (not only generic words such as Parking, Toilet, Hanuman Mandir, Devi Mandir); also fixes the older English case | T40 |
+| A partly typed temple name answered about a different, generic temple | Same rule | T40 |
+| SOS kind guess: "दिल्ली" read as दिल (heart), "fellow" as "fell", lost children marked medical, curly apostrophes | Whole-word matching, precise phrases, a lost person checked first | T40 |
+| "eye hospital" or "heart attack" pushed the asked-for specialty down; mixed names ("Maternity and General") penalised | Only the asked-for specialty is exempt; names with general/accident/multi are not specialists | T40 |
+| "where can I bathe" got safety tips instead of ghats | "bathe"/नहाने removed from the safety words (danger words kept) | T40 |
+| The remembered "visitor" survived a volunteer link; a second identical "new route" note did not restart its timer; a weak browser-test check | Fixed | Browser test |
+| **Taking back a river-crossing approval** was not live with manual publishing, and a **rollback brought the crossing back** | On published data a lane's trust level can only go **down** live (a new approval still waits for a publish) | API check (new) |
+
+**Found in older code — fixed afterwards on the owner's request:**
+
+| ID | Severity | Finding | Fix | Test |
+|---|---|---|---|---|
+| N-1 | Medium | A lane marked "wall" stayed closed on phones after "Reopen" (staff screens showed it open) | Reopening (blocked=false / walkable=true) turns a wall back into a corridor; staff screens count a wall as closed; `passage_kind` is now a live closure field with manual publishing | API check |
+| N-2 | Medium | Recorded walks kept fixes while standing still and ignored GPS accuracy (200 m walked → up to 872 m); no check that the walk starts/ends at the right places | `lib/walk.ts`: a fix is kept only if accurate to ±30 m and at least 4 m (or half its accuracy) from the last; the walk must start at the chosen start place and end at the new place (message in en/hi/mr) | T41 (6 checks) |
+| N-3 | Medium | Hindi/Marathi place labels on the map were drawn without Devanagari shaping | Map labels use the English name (Devanagari removed); Hindi/Marathi names stay in the lists and cards, which the browser shapes correctly | Type check |
+| N-4 | Medium | Admin "Reopen lane" / "Mark walkable" could change the other of two lanes between the same places | `edge-status` takes an optional `lane_id` (ends must match); the admin map and the obstacle screen send it | API checks (2) |
+| N-5 | Medium | Pack files were never deleted | The newest 20 pack files are kept; older files and rows are removed | API check |
+| N-6 | Low–Medium | A printed QR board encoded the address the admin used | Boards use `VITE_PUBLIC_ORIGIN` when set; on a test address (localhost, private IP, ngrok, .local/.test) the print screen warns | Type check |
+| N-7 | Low | Large ids → 500; `--prune` could delete a place with a board; `backup.sh` partial/world-readable dumps | Ids limited (422); places with a board are never pruned; backups written to a temporary file, checked non-empty, `umask 077` | API check (ids) |
+| N-8 | Low | Compass "live" without true north; latent crash on a language change with a map shown; shared admin note; print blank pages; "Open DevTools" shown to pilgrims; retire confirmation never expired | A heading is saved only after a real compass reading (hint in en/hi/mr); map updates are guarded and no longer depend on the language; the note is cleared per card; print CSS removes the screen transform; a trilingual crash screen with Reload and Call 112; the retire confirmation expires after 5 s | Type check, lint, browser test |
+
+Still open from this round: the 30 s pack cache is per server worker (a closure can reach some phones up to 30 s later; it recovers by itself), and a second map download can run in parallel if the card is remounted (files are saved twice, nothing is corrupted).
+
+---
+
+## 4f. End-to-end live test in Chrome (3 Nov 2026)
+
+The whole app was used in Chrome against a database copy with **manual publishing**, as in production:
+- **Pilgrim journey:** app update prompt, language, offline map download, start at Ramkund, a destination typed in Devanagari, route, simulated walk, arrival.
+- **Wrong turn:** walking off the route and getting a new one.
+- **Emergency with no network:** both servers stopped; Ask Setu in Marathi; SOS saved on the phone, then sent by itself once the servers were back.
+- **Operator:** acknowledging the SOS with a quick reply, shown to the pilgrim in Marathi.
+- **Blocked lane:** a pilgrim's report confirmed by a volunteer and reopened from the volunteer screen.
+- **Admin:** a trust change waiting for Publish; publish; rollback (checked in the data phones get); a QR board created, with the test-address warning, and scanned by the pilgrim.
+
+The server logged 0 errors.
+
+Problems seen and fixed:
+
+| Problem | Fix | Test |
+|---|---|---|
+| The volunteer's report list appeared only after the location lookup (up to 8 s) | Shown at once, re-sorted nearest first when the position arrives; an out-of-date answer is ignored | Live (shown after 0.5 s) |
+| Map-road reports and lanes were named "road junction ↔ road junction" / "map road #2292" | Reports carry the street name and the nearest named place; the obstacle screen names map roads the same way ("map road · near Ramkund Ghat (5 m) · #2293") | API check, live |
+| "Lane ↔ reopened" had blank names; the list kept "✕ blocked"; confirming a report did not show the closed lane; the confirmation vanished when the list emptied | One lane name in messages and queue labels (en/hi/mr); the lane list reloads after a save or a confirmed report; the message stays visible | Live |
+
+Seen and **not** a code fault: a second pilgrim report arrived for the next lane. The app sends a report only when "Path blocked" is tapped, and after the first report the route moved to the next lane.
+
+---
+
 ## 5. Files changed
 
 | Area | Files |
 |---|---|
 | Backend | `app/auth.py`, `app/db.py`, `app/main.py`, `app/schemas.py`, `app/routers/nodes.py`, `app/routers/sos.py`, `app/routers/volunteer.py`, `app/services/graph_report.py`, `app/services/osm_network.py`, `app/services/pack_builder.py`, `app/services/river_guard.py` |
-| Frontend | `src/App.tsx`, `src/lib/assistant.ts`, `src/lib/auth.ts`, `src/lib/nearest.ts`, `src/lib/outbox.ts`, `src/lib/reportParser.ts`, `src/lib/sos.ts`, `src/components/OpsSos.tsx`, `src/components/SosScreen.tsx`, `src/components/VisitorReports.tsx`, `src/components/VolunteerObstacle.tsx`, `src/components/VolunteerPathHeading.tsx`, `src/components/VolunteerRegisterForm.tsx`, `src/components/VolunteerLogin.tsx`, `src/components/OpsCases.tsx`, `src/index.css`, `src/i18n/en.ts`, `hi.ts`, `mr.ts`, `vol-en.ts`, `vol-hi.ts`, `vol-mr.ts` |
-| Tests | `frontend/scripts/runRoutingTests.ts` (T36–T39, 19 new checks), `backend/scripts/run_api_checks.py` (18 new checks, 2 updated), `backend/scripts/validate_graph.py` (its OK line now says "approved bridge") |
+| Frontend | `src/App.tsx`, `src/lib/assistant.ts`, `src/lib/auth.ts`, `src/lib/nearest.ts`, `src/lib/outbox.ts`, `src/lib/reportParser.ts`, `src/lib/sos.ts`, `src/components/OpsSos.tsx`, `src/components/SosScreen.tsx`, `src/components/VisitorReports.tsx`, `src/components/VolunteerObstacle.tsx`, `src/components/VolunteerPathHeading.tsx`, `src/components/VolunteerRegisterForm.tsx`, `src/components/VolunteerLogin.tsx`, `src/components/OpsCases.tsx`, `src/lib/placeInfo.ts`, `src/index.css`, `src/i18n/en.ts`, `hi.ts`, `mr.ts`, `vol-en.ts`, `vol-hi.ts`, `vol-mr.ts` |
+| Tests | `frontend/scripts/runRoutingTests.ts` (T36–T40, 30 new checks), `backend/scripts/smoke_browser.py` (remembered visitor choice), `backend/scripts/run_api_checks.py` (18 new checks, 2 updated), `backend/scripts/validate_graph.py` (its OK line now says "approved bridge") |
 | Docs | this report, `TEST_EXECUTION_REPORT.md`, plus updates to `KNOWN_LIMITATIONS.md`, `SECURITY_AND_PRIVACY.md`, `TESTING_AND_QA.md`, `DEPLOYMENT_READINESS.md`, `LAUNCH_READINESS.md`, `ROUTING_GRAPH_VALIDATION.md`, `PROJECT_DEEP_DIVE.md`, `README.md` |
 
 No dependency was added. No working feature was removed. The real database was never written; every data-changing test ran on a copy or a temporary database.
@@ -353,12 +429,12 @@ See [TEST_EXECUTION_REPORT.md](TEST_EXECUTION_REPORT.md) for the full matrix. In
 | TypeScript type check (`tsc -b`) | 0 errors |
 | ESLint | 0 errors, 0 warnings |
 | Production build | OK. No simulation code in the production bundle |
-| Routing and logic tests (`npm run test:routing`) | **217 passed, 0 failed** |
-| API checks, temporary SQLite | **218 passed, 0 failed** |
-| API checks, empty PostgreSQL 16 | **216 passed, 0 failed** (2 dataset-build checks run on SQLite only) |
+| Routing and logic tests (`npm run test:routing`) | **240 passed, 0 failed** |
+| API checks, temporary SQLite | **225 passed, 0 failed** |
+| API checks, empty PostgreSQL 16 | **223 passed, 0 failed** (2 dataset-build checks run on SQLite only) |
 | Old database upgrade (`check_migration.py`) | All OK |
 | Graph check on a copy of the real database | OK. 0 lanes cross the river except on bridges; the new end-stretch check changes nothing in the real data |
-| Headless Chrome browser test (production CSP) | **30 / 30**: first visit, map download, airplane-mode route, languages, Ask Setu, stale data, boards, search, closure during guidance, SOS offline → online → acknowledged, cases, report helper, volunteer offline queue |
+| Headless Chrome browser test (production CSP) | **31 / 31**: first visit, map download, airplane-mode route, languages, Ask Setu, stale data, boards, search, closure during guidance, SOS offline → online → acknowledged, cases, report helper, volunteer offline queue |
 
 ---
 

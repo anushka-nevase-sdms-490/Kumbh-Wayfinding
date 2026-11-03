@@ -17,6 +17,7 @@ import {
   nextNavState,
 } from "../src/lib/navigation";
 import { placesByDistance, rerouteStart, suggestStart } from "../src/lib/nearest";
+import { addWalkFix, walkEndsProblem } from "../src/lib/walk";
 import { mapRoadParts, routeLine } from "../src/lib/mapData";
 import { ON_ROUTE_M, reachedPlace, routeProgress, offRouteLimitM } from "../src/lib/progress";
 import { INITIAL_GPS_FILTER, filterFix } from "../src/lib/gpsFilter";
@@ -43,8 +44,8 @@ import {
 } from "../src/lib/location/simulationWalk";
 import { fetchNewerPack } from "../src/lib/packSync";
 import { checkStored, isQuotaError, packChecksum } from "../src/lib/packStore";
-import { normalizeBoardCode, opStatus, resolveBoard, searchPlaces, trustOf } from "../src/lib/placeInfo";
-import { createSos, flushSos, presetOf, SOS_PRESETS, type SosItem, type SosStore, type SosTransport } from "../src/lib/sos";
+import { normalizeBoardCode, opStatus, resolveBoard, searchPlaces, soundKey, trustOf } from "../src/lib/placeInfo";
+import { createSos, flushSos, guessSosKind, presetOf, SOS_PRESETS, type SosItem, type SosStore, type SosTransport } from "../src/lib/sos";
 import { ask } from "../src/lib/assistant";
 import { parseReport } from "../src/lib/reportParser";
 import { dataStaleness, GUIDE_RECHECK_MS, routeChangedByData, shouldRecheck } from "../src/lib/packSync";
@@ -1303,6 +1304,81 @@ for (const k of Object.keys(SOS_PRESETS) as (keyof typeof SOS_PRESETS)[]) {
   const key = `sos.preset.${k}` as const;
   assert(en[key] === SOS_PRESETS[k] && !!hi[key] && hi[key] !== en[key] && !!mr[key] && mr[key] !== en[key],
     `T39 quick reply '${k}' is translated into Hindi and Marathi`);
+}
+
+// ── T40: live-run fixes — Devanagari search, general hospitals first, safety questions, SOS kind ──
+{
+  const at = (code: string, name: string, node_type: string, lat: number, lon: number, local_name: string | null = null) =>
+    ({ code, name, node_type, lat, lon, local_name }) as QrNode;
+  const places = [
+    at("K", "Kalaram Mandir", "temple", 20.0085, 73.7930),
+    at("R", "Ramkund Ghat", "ghat", 20.0073, 73.7925, "रामकुंड"),
+    at("S", "Saibaba Mandir", "temple", 20.0080, 73.7935),
+    at("C", "CBS Bus Stand", "transport", 20.0010, 73.7800, "सीबीएस बस स्थानक"),
+    at("E", "Shraddha Eye Hospital", "medical", 20.0075, 73.7945),
+    at("G", "NSKMC Indira Gandhi Hospital", "medical", 20.0090, 73.7950),
+  ];
+  const find = (q: string) => searchPlaces(places, q, () => "").map((n) => n.code);
+  assert(soundKey("कालाराम") === soundKey("Kalaram") && soundKey("काळाराम") === soundKey("Kalaram"),
+    `T40 'कालाराम', 'काळाराम' and 'Kalaram' sound the same (${soundKey("कालाराम")}, ${soundKey("Kalaram")})`);
+  assert(find("कालाराम")[0] === "K" && find("काळाराम मंदिर")[0] === "K" && find("kalaaram")[0] === "K",
+    "T40 a place name typed in Devanagari (or spelt differently) finds the English-named place");
+  assert(find("रामकुंड")[0] === "R" && find("kala")[0] === "K", "T40 local names and ordinary search still come first");
+  assert(find("साईबाबा")[0] === "S", `T40 a whole-word sound match ranks first (${find("साईबाबा")})`);
+  const from = { lat: 20.0073, lon: 73.7925 };
+  const em = ask("मुलगा पाण्यात बुडाला", { places, from, now: new Date() });
+  const firstHelp = em.kind === "emergency" ? em.places[0]?.node.code : null;
+  assert(firstHelp === "G", `T40 emergency help: a general hospital comes before a nearer eye hospital (${firstHelp})`);
+  const near = ask("nearest hospital", { places, from, now: new Date() });
+  assert(near.kind === "nearest" && near.places[0].node.code === "G", "T40 'nearest hospital': general hospital first");
+  const st = ask("कालाराम मंदिर खुला है?", { places, from, now: new Date() });
+  assert(st.kind === "status" && st.place.node.code === "K", "T40 Ask Setu finds a place named in Devanagari");
+  for (const q of ["Is it dangerous to bathe at Ramkund at night?", "धोका आहे का", "क्या यहाँ खतरा है"])
+    assert(ask(q, { places, from, now: new Date() }).kind === "safety", `T40 '${q}' gets the safety tips`);
+  assert(guessSosKind("my father fainted near the steps") === "medical" && guessSosKind("माझा मुलगा हरवला") === "lost"
+    && guessSosKind("भगदड़ हो रही है") === "unsafe" && guessSosKind("where is the bus") === null && guessSosKind(null) === null,
+    "T40 the SOS kind is suggested from the note (medical / lost / unsafe), nothing when unclear");
+  assert(guessSosKind("मेरा बेटा खो गया, हम दिल्ली से आए") === "lost" && guessSosKind("my child fell behind and is lost") === "lost"
+    && guessSosKind("I can’t find my son") === "lost" && guessSosKind("benefits outfits fellow sweetheart") === null
+    && guessSosKind("snake charmers") === null,
+    "T40 SOS kind: whole words only (दिल्ली is not दिल, 'fellow' is not 'fell'), a lost person first, curly apostrophes");
+  // Generic or shared names never become "the" named place (several "Parking", "Hanuman Mandir").
+  const more = [...places,
+    at("P1", "Parking", "parking", 20.0074, 73.7926), at("P2", "Parking", "parking", 20.0200, 73.8000),
+    at("H1", "Hanuman Mandir", "temple", 20.0300, 73.8000), at("H2", "Hanuman Mandir", "temple", 20.0310, 73.8010),
+    at("D1", "Sri Dakshinmukhi Hanuman Mandir", "temple", 20.0076, 73.7928)];
+  const park = ask("पार्किंग खुली है?", { places: more, from, now: new Date() });
+  assert(park.kind === "nearest" && park.places[0].node.code === "P1",
+    `T40 'is the parking open?' lists the nearest parking, not one of the same-named places (${park.kind})`);
+  const hanu = ask("दक्षिणमुखी हनुमान मंदिर खुला है?", { places: more, from, now: new Date() });
+  assert(hanu.kind !== "status" || hanu.place.node.code === "D1",
+    "T40 a partly typed temple name never answers about a different, generic 'Hanuman Mandir'");
+  const eye = ask("nearest eye hospital", { places, from, now: new Date() });
+  assert(eye.kind === "nearest" && eye.places[0].node.code === "E", "T40 asking for an eye hospital shows the eye hospital first");
+  const ha = ask("heart attack", { places, from, now: new Date() });
+  assert(ha.kind === "emergency" && ha.places[0].node.code === "G", "T40 'heart attack' does not lift the eye hospital to the top");
+  assert(ask("where can I bathe", { places: [...places, at("GH", "Ramkund Ghat 2", "ghat", 20.0072, 73.7924)], from, now: new Date() }).kind !== "safety",
+    "T40 'where can I bathe' is not answered with safety tips");
+}
+
+// ── T41: a recorded walk keeps only real movement, and must start and end at the right places ──
+{
+  const pt = (lat: number, lon: number, t: number) => ({ lat, lon, heading_deg: null, t_ms: t });
+  let walk: ReturnType<typeof addWalkFix> = [];
+  walk = addWalkFix(walk, pt(20.0, 73.8, 0), 6);
+  // Five minutes standing still with GPS wander of a few metres: nothing added.
+  for (let i = 1; i <= 300; i++) walk = addWalkFix(walk, pt(20.0 + Math.sin(i) * 0.00002, 73.8 + Math.cos(i) * 0.00002, i * 1000), 6);
+  assert(walk.length === 1, `T41 standing still (GPS wander ~3 m) adds no points (${walk.length})`);
+  const rough = addWalkFix(walk, pt(20.0005, 73.8, 400_000), 80);
+  assert(rough.length === 1, "T41 a fix accurate only to ±80 m is not part of the walk");
+  for (let i = 1; i <= 20; i++) walk = addWalkFix(walk, pt(20.0 + i * 0.00009, 73.8, 400_000 + i * 8000), 6);
+  const len = walk.slice(1).reduce((m, p, i) => m + haversineM(walk[i].lat, walk[i].lon, p.lat, p.lon), 0);
+  assert(walk.length === 21 && Math.abs(len - 200) < 5, `T41 a real 200 m walk is kept at its length (${Math.round(len)} m, ${walk.length} points)`);
+  const startPlace = { code: "KUMBH-A1", lat: 20.0, lon: 73.8 };
+  assert(walkEndsProblem(walk, startPlace, { lat: 20.0018, lon: 73.8 }) === null, "T41 a walk from the start place to the new place is accepted");
+  assert(walkEndsProblem(walk, { code: "KUMBH-A2", lat: 20.01, lon: 73.8 }, { lat: 20.0018, lon: 73.8 }) === "start",
+    "T41 a walk that did not start at the chosen start place is refused");
+  assert(walkEndsProblem(walk, startPlace, { lat: 20.004, lon: 73.8 }) === "end", "T41 a walk that ended far from the new place is refused");
 }
 
 // ── T38: off the route, the new route starts near the walker — never across the river ──

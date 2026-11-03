@@ -17,6 +17,7 @@ import { positionsSimulated, volunteerGeo } from "../lib/location/geo";
 import { useI18n } from "../i18n/context";
 import type { MessageKey } from "../i18n/messages";
 import "./Volunteer.css";
+import { addWalkFix, walkEndsProblem } from "../lib/walk";
 
 type Props = {
   apiBase: string;
@@ -82,7 +83,7 @@ export function VolunteerRegisterForm({
   const [confirmCode, setConfirmCode] = useState("");
   const watchRef = useRef<number | null>(null);
   const headingRef = useRef<number | null>(heading.heading);
-  headingRef.current = heading.live ? heading.heading : null;
+  headingRef.current = heading.live && heading.north ? heading.heading : null;
 
   // Only the newest location request may update the form.
   const gpsRequestRef = useRef(0);
@@ -231,20 +232,9 @@ export function VolunteerRegisterForm({
           heading_deg: headingRef.current,
           t_ms: Date.now(),
         };
-        setWaypoints((prev) => {
-          if (prev.length === 0) return [next];
-          const last = prev[prev.length - 1];
-          const dt = next.t_ms - last.t_ms;
-          const moved =
-            Math.hypot(
-              (next.lat - last.lat) * 111320,
-              (next.lon - last.lon) *
-                111320 *
-                Math.cos((next.lat * Math.PI) / 180)
-            ) > 1.5;
-          if (dt < 2000 && !moved) return prev;
-          return [...prev, next];
-        });
+        // Only accurate fixes where the volunteer really moved (lib/walk.ts):
+        // standing still must not add length to the lane.
+        setWaypoints((prev) => addWalkFix(prev, next, pos.coords.accuracy));
       },
       (e) => {
         setFormError(
@@ -290,6 +280,18 @@ export function VolunteerRegisterForm({
     }
     if (existingPlaces.length > 0 && waypoints.length < 2) {
       setFormError(t("vol.reg.recordFirst"));
+      return;
+    }
+    // The walk must start at the chosen start place and end here, at the new
+    // place: otherwise the lane would join the wrong places.
+    const startPlace = existingPlaces.find((n) => n.code === connectTo);
+    const ends = startPlace && lat != null && lon != null ? walkEndsProblem(waypoints, startPlace, { lat, lon }) : null;
+    if (ends === "start") {
+      setFormError(t("vol.reg.walkStartFar", { name: startPlace?.name ?? connectTo }));
+      return;
+    }
+    if (ends === "end") {
+      setFormError(t("vol.reg.walkEndFar"));
       return;
     }
     if (recording) {

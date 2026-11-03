@@ -81,6 +81,8 @@ Publish.
 The destination screen has **Search a place by name**:
 - it matches the English name, the local (Devanagari) name and the category, in any case, with several words;
 - names starting with the query come first;
+- **a name typed in Devanagari also finds English-only names by sound** (since 2026-11-03): "कालाराम" or "काळाराम मंदिर" finds "Kalaram Mandir", "रामकुंड" finds "Ramkund Ghat", and a spelling such as "kalaaram" works too. These matches come after ordinary matches, whole words first (`soundKey` in `lib/placeInfo.ts`). Ask Setu uses the same matching for "is <place> open?";
+- without a search, places are listed **nearest first** with their straight-line distance from the start;
 - it works offline and with the area and category filters.
 
 ## Tests

@@ -78,6 +78,7 @@ def overview(db: Session = Depends(get_db), admin: Volunteer = Depends(require_a
                 "blocked": e.blocked,
                 "blocked_until": e.blocked_until,
                 "door_state": e.door_state,
+                "passage_kind": e.passage_kind or "corridor",
                 "obstacle_note": e.obstacle_note,
                 "name": e.name,
                 "distance_m": e.distance_m,

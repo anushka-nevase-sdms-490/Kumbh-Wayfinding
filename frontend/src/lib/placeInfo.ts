@@ -55,9 +55,51 @@ export function normalizeText(s: string): string {
     .trim();
 }
 
+// Devanagari → rough Latin letters, for matching only (the inherent "a" is
+// left out: soundKey drops every "a" anyway, because Hindi/Marathi spelling
+// and English spellings of the same name disagree mostly about "a"s).
+const DEVA: Record<string, string> = {
+  अ: "", आ: "", इ: "i", ई: "i", उ: "u", ऊ: "u", ऋ: "ri", ए: "e", ऐ: "e", ओ: "o", औ: "au", ऑ: "o",
+  "ा": "", "ि": "i", "ी": "i", "ु": "u", "ू": "u", "ृ": "ri", "े": "e", "ै": "e", "ो": "o", "ौ": "au", "ॉ": "o",
+  "ं": "n", "ँ": "n", "ः": "", "्": "", "़": "",
+  क: "k", ख: "k", ग: "g", घ: "g", ङ: "n", च: "c", छ: "c", ज: "j", झ: "j", ञ: "n",
+  ट: "t", ठ: "t", ड: "d", ढ: "d", ण: "n", त: "t", थ: "t", द: "d", ध: "d", न: "n",
+  प: "p", फ: "f", ब: "b", भ: "b", म: "m", य: "y", र: "r", ल: "l", ळ: "l", व: "v",
+  श: "s", ष: "s", स: "s", ह: "h", "०": "0", "१": "1", "२": "2", "३": "3", "४": "4",
+  "५": "5", "६": "6", "७": "7", "८": "8", "९": "9",
+};
+
+/**
+ * A loose sound pattern of a name, the same for "कालाराम", "काळाराम" and
+ * "Kalaram": Devanagari is spelt out in Latin letters, then both are folded
+ * (no "a", no "h" after a consonant, ph=f, w=v, ee=i, oo=u, no double letters).
+ * Only for finding places; nothing is shown from it.
+ */
+export function soundKey(s: string): string {
+  const latin = [...s.normalize("NFC")].map((ch) => DEVA[ch] ?? ch).join("");
+  return normalizeText(latin)
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/ph/g, "f")
+    .replace(/ch/g, "c")
+    .replace(/sh/g, "s")
+    .replace(/w/g, "v")
+    .replace(/z/g, "j")
+    .replace(/q/g, "k")
+    .replace(/y/g, "i")
+    .replace(/([bcdfgjklmnprstv])h/g, "$1")
+    .replace(/a/g, "")
+    .replace(/ee/g, "i")
+    .replace(/oo/g, "u")
+    .replace(/([a-z])\1+/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
  * Places whose English name, local name or category label contains every word
- * of the query. Order: name starts with the query first, then the rest as given.
+ * of the query. Order: name starts with the query first, then the other text
+ * matches, then names that only sound the same (a name typed in Devanagari,
+ * "कालाराम", finds "Kalaram Mandir"; a spelling such as "kalaaram" too).
  */
 export function searchPlaces(nodes: QrNode[], query: string, categoryLabel: (n: QrNode) => string): QrNode[] {
   const q = normalizeText(query);
@@ -69,7 +111,21 @@ export function searchPlaces(nodes: QrNode[], query: string, categoryLabel: (n: 
   });
   const starts = (n: QrNode) =>
     normalizeText(n.name).startsWith(q) || normalizeText(n.local_name ?? "").startsWith(q);
-  return [...hits.filter(starts), ...hits.filter((n) => !starts(n))];
+  const keyWords = soundKey(query).split(" ").filter(Boolean);
+  const sounds =
+    keyWords.length > 0 && keyWords.every((w) => w.length >= 2)
+      ? nodes.filter((n) => {
+          if (hits.includes(n)) return false;
+          const hay = soundKey(`${n.name} ${n.local_name ?? ""} ${categoryLabel(n)}`);
+          return keyWords.every((w) => hay.includes(w));
+        })
+      : [];
+  // Whole words that sound the same first ("साईबाबा" → "Saibaba Mandir" before "CBS …").
+  const whole = (n: QrNode) => {
+    const nameWords = new Set(soundKey(`${n.name} ${n.local_name ?? ""}`).split(" "));
+    return keyWords.every((w) => nameWords.has(w));
+  };
+  return [...hits.filter(starts), ...hits.filter((n) => !starts(n)), ...sounds.filter(whole), ...sounds.filter((n) => !whole(n))];
 }
 
 // Board codes: 5 characters, no look-alikes (backend routers/admin.py BOARD_ALPHABET).

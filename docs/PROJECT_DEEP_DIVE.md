@@ -423,7 +423,7 @@ sequenceDiagram
 | **psycopg2** | PostgreSQL driver | Connects Python to PostgreSQL |
 | **python-dotenv, python-multipart, aiofiles** | Helpers | Settings files, form uploads, file serving |
 | **hashlib.scrypt** (built into Python) | Slow password hashing | PINs are never stored as plain text |
-| **httpx** (development only) | Test HTTP client | Runs the 218 API checks |
+| **httpx** (development only) | Test HTTP client | Runs the 225 API checks |
 
 **Our own backend modules:**
 
@@ -461,8 +461,8 @@ sequenceDiagram
 
 | Tool | Checks |
 |---|---|
-| `frontend/scripts/runRoutingTests.ts` (run with **tsx**) | 217 checks of routing, offline, SOS, assistant, staleness… |
-| `backend/scripts/run_api_checks.py` | 218 checks of every API endpoint, roles and security |
+| `frontend/scripts/runRoutingTests.ts` (run with **tsx**) | 240 checks of routing, offline, SOS, assistant, staleness… |
+| `backend/scripts/run_api_checks.py` | 225 checks of every API endpoint, roles and security |
 | `backend/scripts/smoke_browser.py` + `cdp.py` | Drives a real **headless Chrome** through 30 steps under the production security headers |
 | `backend/scripts/validate_graph.py`, `check_migration.py` | Data integrity and database upgrade checks |
 | **tsc**, **ESLint** | Type errors and code style (both 0) |
@@ -609,9 +609,9 @@ Results after the code review of 3 Nov 2026 (`docs/CODE_REVIEW_AND_BUG_FIX_REPOR
 
 | Test | Result |
 |---|---|
-| Routing and logic checks | **217 passed, 0 failed** |
-| API checks (all endpoints, roles, security) | **218 passed** (SQLite); **216 passed** on PostgreSQL |
-| Browser test (headless Chrome, 30 steps, production security headers) | **30/30 passed** |
+| Routing and logic checks | **240 passed, 0 failed** |
+| API checks (all endpoints, roles, security) | **225 passed** (SQLite); **223 passed** on PostgreSQL |
+| Browser test (headless Chrome, 31 steps, production security headers) | **31/31 passed** |
 | Type check / code style | 0 errors / 0 warnings |
 | Database upgrade and data graph checks | Passed |
 | Offline test (all servers stopped) | App opened, places loaded, route Ramkund → Kalaram found (413 m) |

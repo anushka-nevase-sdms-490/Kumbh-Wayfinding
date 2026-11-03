@@ -9,11 +9,11 @@ on site in Nashik or on real phones in the field.**
 ```bash
 cd frontend
 npx tsc -b && npm run lint            # types; lint (0 errors, 1 old warning: an effect's deps in App.tsx)
-npm run test:routing                  # 217 checks (T1–T39): routing, guidance, offline, languages, simulation, queue, places, SOS, assistant, report helper, stale data
+npm run test:routing                  # 240 checks (T1–T41): routing, guidance, offline, languages, simulation, queue, places, SOS, assistant, report helper, stale data
 npm run build                         # production build
 
 cd ../backend
-.venv/bin/python scripts/run_api_checks.py                  # 218 API checks on a temporary SQLite database
+.venv/bin/python scripts/run_api_checks.py                  # 225 API checks on a temporary SQLite database
 SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
   .venv/bin/python scripts/run_api_checks.py                # the same on an EMPTY Postgres database
 .venv/bin/python scripts/validate_graph.py                  # data checks on the real database; must end with OK
@@ -39,10 +39,10 @@ SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
 |---|---|
 | TypeScript (`tsc -b`) | Clean |
 | ESLint | 0 errors, 0 warnings |
-| Routing and phone logic (`test:routing`) | **217 / 217** (T36–T39 new) |
-| API checks, SQLite | **218 / 218** |
-| API checks, Postgres 16 (empty database) | **216 / 216, ALL OK** (2 dataset-build checks run on SQLite only) |
-| Browser smoke test (headless Chrome, production CSP) | **30 / 30** |
+| Routing and phone logic (`test:routing`) | **240 / 240** (T36–T41 new) |
+| API checks, SQLite | **225 / 225** |
+| API checks, Postgres 16 (empty database) | **223 / 223, ALL OK** (2 dataset-build checks run on SQLite only) |
+| Browser smoke test (headless Chrome, production CSP) | **31 / 31** |
 | Migration from an old database (`check_migration.py`) | **9 / 9** |
 | Production build | OK; no simulation code; no third-party URLs |
 | `validate_graph.py` on the real Nashik database | OK: 30 river crossings on bridges, 0 unsafe; main network 1,903 points |
@@ -69,6 +69,8 @@ SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
 | T37 | More emergency phrasings in en/hi/mr (आगीत, बुडाला, “can’t breathe”, snake bite, danger…), ordinary questions are not emergencies; report helper: ages are not times, Marathi नाव ("boat") is not a name, Devanagari digits |
 | T38 | Off the route, the new route starts within 50 m of the walker (a road junction counts), never from a place across the river |
 | T39 | The operator's quick replies are recognised and exist in Hindi and Marathi; a typed message is shown as typed |
+| T40 | Live-run fixes: a place typed in Devanagari is found by sound; general hospitals before specialist ones for medical help; bathing/danger questions get safety tips; the SOS kind is suggested from the note |
+| T41 | Recorded walks: standing still and rough fixes add no length; a walk must start at the chosen start place and end at the new place |
 
 ### API checks (`backend/scripts/run_api_checks.py`)
 

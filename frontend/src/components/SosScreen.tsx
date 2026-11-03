@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "../i18n/context";
-import { createSos, httpTransport, idbSos, presetOf, SOS_EVENT, type SosItem, type SosKind } from "../lib/sos";
+import { createSos, guessSosKind, httpTransport, idbSos, presetOf, SOS_EVENT, type SosItem, type SosKind } from "../lib/sos";
 import { haversineM, isRegisteredLocation, type QrNode } from "../lib/types";
 import { PlaceBadges } from "./PlaceBadges";
 
@@ -27,7 +27,8 @@ const KINDS: SosKind[] = ["medical", "lost", "unsafe", "other"];
  */
 export function SosScreen({ apiBase, places, position, start, device, onBack, onRoute, initialNote }: Props) {
   const { t, lang, placeLabel, dist } = useI18n();
-  const [kind, setKind] = useState<SosKind | null>(null);
+  // A note from Ask Setu ("my father fainted") pre-selects the likely kind; the visitor can change it.
+  const [kind, setKind] = useState<SosKind | null>(() => guessSosKind(initialNote));
   const [note, setNote] = useState(initialNote ?? "");
   const [busy, setBusy] = useState(false);
   // Only when the phone could not keep the alert (it is then missing from "Your alerts").

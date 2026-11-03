@@ -63,6 +63,31 @@ export const SOS_PRESETS = {
 } as const;
 export type SosPreset = keyof typeof SOS_PRESETS;
 
+// Words in a note (from Ask Setu) that suggest the kind of help. Only a
+// suggestion: the visitor sees it selected and can change it before sending.
+// Phrases (with a space) match as text; single words match the start of a word
+// ("injured", "बेहोश हो गए"), never the middle ("benefits", "दिल्ली" ≠ दिल).
+const KIND_WORDS: Record<"medical" | "lost" | "unsafe", string[]> = {
+  medical: [
+    "faint", "unconscious", "bleeding", "blood", "injur", "hurt", "breath", "heart attack", "chest pain", "seizure",
+    "snake bite", "snakebite", "bitten", "drown", "sick", "unwell", "fever", "collapsed", "fell down", "बेहोश", "खून",
+    "घायल", "चोट", "सांस", "साँस", "दिल का दौरा", "हार्ट अटैक", "बीमार", "डूब", "बेशुद्ध", "रक्त", "जखमी", "श्वास",
+    "आजारी", "बुडा", "बुडत", "चक्कर", "सर्पदंश", "साप चाव", "सांप ने काट", "साँप ने काट",
+  ],
+  lost: ["lost", "missing", "can't find my", "cannot find my", "हरव", "खो गय", "खोया", "खोई", "गुम", "बिछड", "सापडत नाही"],
+  unsafe: ["crowd", "stampede", "crush", "pushing", "भीड़", "भगदड़", "धक्का", "गर्दी", "चेंगराचेंगरी"],
+};
+
+export function guessSosKind(note: string | null | undefined): SosKind | null {
+  const q = (note ?? "").toLowerCase().replace(/[\u2018\u2019\u02bc]/g, "'");
+  if (!q.trim()) return null;
+  const tokens = q.split(/[\s,.;:!?()"।]+/).filter(Boolean);
+  const said = (w: string) => (w.includes(" ") ? q.includes(w) : tokens.some((t) => t.startsWith(w)));
+  // A lost person is named first: "my child fell behind and is lost" is not medical.
+  const order: (keyof typeof KIND_WORDS)[] = ["lost", "medical", "unsafe"];
+  return order.find((k) => KIND_WORDS[k].some(said)) ?? null;
+}
+
 export function presetOf(message: string | null | undefined): SosPreset | null {
   const hit = (Object.keys(SOS_PRESETS) as SosPreset[]).find((k) => SOS_PRESETS[k] === message?.trim());
   return hit ?? null;

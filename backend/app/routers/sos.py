@@ -7,8 +7,9 @@ server stored it: 201/200 with an id) → Acknowledged (an operator confirmed
 it). Setu does not contact the police or an ambulance.
 """
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,6 +19,9 @@ from ..db import SosAlert, Volunteer, get_db
 from ..schemas import SosAck, SosCreate, SosResolve
 from ..services.retention import purge_expired
 from .reports import _device_hash, _reporter_hash
+
+# A database id from the URL: larger values are refused (422), not a 500.
+RowId = Annotated[int, Path(ge=1, le=2_147_483_647)]
 
 router = APIRouter(tags=["sos"])
 
@@ -127,7 +131,7 @@ def _alert(db: Session, alert_id: int) -> SosAlert:
 
 
 @router.post("/api/ops/sos/{alert_id}/ack")
-def ack_sos(alert_id: int, body: SosAck, db: Session = Depends(get_db), vol: Volunteer = Depends(require_operator)):
+def ack_sos(alert_id: RowId, body: SosAck, db: Session = Depends(get_db), vol: Volunteer = Depends(require_operator)):
     a = _alert(db, alert_id)
     if a.status in ("resolved", "expired"):
         raise HTTPException(409, f"This alert is already {a.status}")
@@ -142,7 +146,7 @@ def ack_sos(alert_id: int, body: SosAck, db: Session = Depends(get_db), vol: Vol
 
 
 @router.post("/api/ops/sos/{alert_id}/resolve")
-def resolve_sos(alert_id: int, body: SosResolve, db: Session = Depends(get_db), vol: Volunteer = Depends(require_operator)):
+def resolve_sos(alert_id: RowId, body: SosResolve, db: Session = Depends(get_db), vol: Volunteer = Depends(require_operator)):
     a = _alert(db, alert_id)
     if a.status not in ("resolved", "expired"):
         a.status = "resolved"

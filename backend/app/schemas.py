@@ -207,6 +207,8 @@ class VolunteerEdgeStatusRequest(BaseModel):
 
     from_code: str = Field(..., min_length=2, max_length=32)
     to_code: str = Field(..., min_length=2, max_length=32)
+    # The exact lane (two lanes can join the same two places); its ends must match.
+    lane_id: Optional[int] = Field(None, ge=1, le=2_147_483_647)
     blocked: Optional[bool] = None
     door_state: Optional[str] = Field(None, max_length=16)  # none | open | closed | unknown
     passage_kind: Optional[str] = Field(None, max_length=32)
@@ -311,6 +313,11 @@ class BlockReportOut(BaseModel):
     # Different visitors who reported this lane while it is pending.
     reporters: int
     distance_m: Optional[float] = None
+    # Map roads join hidden junctions: the street name and the nearest named
+    # place tell a volunteer where the lane is.
+    street: Optional[str] = None
+    near_name: Optional[str] = None
+    near_m: Optional[float] = None
 
 
 class ConfirmReportRequest(BaseModel):
@@ -347,6 +354,7 @@ class AdminLane(BaseModel):
     blocked: bool
     blocked_until: Optional[datetime] = None
     door_state: str
+    passage_kind: str = "corridor"
     obstacle_note: Optional[str] = None
     name: Optional[str] = None
     distance_m: float
@@ -387,7 +395,7 @@ class PublishRequest(BaseModel):
 
 
 class RollbackRequest(BaseModel):
-    release_id: int
+    release_id: int = Field(..., ge=1, le=2_147_483_647)
 
 
 class VerifyRequest(BaseModel):
@@ -395,7 +403,7 @@ class VerifyRequest(BaseModel):
 
     target: str = Field(..., pattern=r"^(place|lane)$")
     code: Optional[str] = Field(None, max_length=32)  # place
-    lane_id: Optional[int] = None  # lane
+    lane_id: Optional[int] = Field(None, ge=1, le=2_147_483_647)  # lane
     status: str
     note: Optional[str] = Field(None, max_length=256)
 
@@ -452,7 +460,7 @@ class CaseFields(BaseModel):
 
 
 class CaseCreate(CaseFields):
-    sos_id: Optional[int] = None
+    sos_id: Optional[int] = Field(None, ge=1, le=2_147_483_647)
 
 
 class CaseUpdate(CaseFields):

@@ -191,6 +191,9 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
           {!heading.secure && (
             <p className="gps-status err">{t("vol.heading.needHttps")}</p>
           )}
+          {heading.secure && heading.live && !heading.north && (
+            <p className="gps-status warn">{t("vol.heading.needNorth")}</p>
+          )}
           <button
             type="button"
             className="btn soft block"
@@ -203,9 +206,10 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
             className="btn secondary block"
             // No compass reading yet: the heading would be a meaningless 0° (north),
             // and visitors' turn directions are built from it.
-            disabled={!heading.live}
+            // A heading saved for a lane must point to real north (turn directions use it).
+            disabled={!heading.live || !heading.north}
             onClick={() => {
-              if (!heading.live) return;
+              if (!heading.live || !heading.north) return;
               setCaptured(Math.round(heading.heading * 10) / 10);
               setMsg(null);
               setErr(null);

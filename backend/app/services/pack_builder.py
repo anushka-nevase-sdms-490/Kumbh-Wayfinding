@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 
 from ..config import publishing_manual, settings
 from ..db import BlockReport, DatasetRelease, Edge, PackVersion, QrNode, Volunteer
-from ..verification import REJECTED
+from ..verification import OFFICIALLY_VERIFIED, REJECTED, REMOTELY_REVIEWED
+
+# Trust levels only an admin sets; taking one back is live (see _on_release).
+ADMIN_APPROVED_LEVELS = {REMOTELY_REVIEWED, OFFICIALLY_VERIFIED}
 from ..schemas import EdgeOut, QrNodeOut
 
 
@@ -37,7 +40,8 @@ _warned = {"no_water": False}
 
 # Lane fields that take effect at once even when publishing is manual: closing
 # or reopening a lane must never wait for an admin to publish.
-CLOSURE_FIELDS = ("walkable", "blocked", "door_state")
+# passage_kind: a lane marked as a wall (impassable on phones) or reopened from one.
+CLOSURE_FIELDS = ("walkable", "blocked", "door_state", "passage_kind")
 # Place fields that are live in the same way: a facility closing must not wait,
 # and neither must retiring a board on the wrong place (phones would keep
 # telling visitors the wrong location until the next publish).
@@ -116,6 +120,11 @@ def _on_release(db: Session, release: DatasetRelease) -> Tuple[List[dict], List[
             if row.verification == REJECTED:
                 continue
             e = {**e, **{f: getattr(row, f) for f in CLOSURE_FIELDS}}
+            # An admin approval taken back (e.g. a river crossing found to be a
+            # GPS jump) applies at once and also to older versions after a
+            # rollback; a new approval still waits for a publish.
+            if e.get("verification") in ADMIN_APPROVED_LEVELS and row.verification not in ADMIN_APPROVED_LEVELS:
+                e["verification"] = row.verification
         edges.append(e)
     return nodes, edges
 
@@ -361,4 +370,25 @@ def ensure_current_pack(db: Session) -> PackVersion:
             os.remove(path)
         return _remember(latest)
     db.refresh(row)
+    _prune_packs(db)
     return _remember(row)
+
+
+# Pack files kept on disk: every closure writes a new ~2 MB file; phones only
+# ask for the latest (and a just-replaced one while it downloads).
+KEEP_PACK_FILES = 20
+
+
+def _prune_packs(db: Session) -> None:
+    old = db.query(PackVersion).order_by(PackVersion.id.desc()).offset(KEEP_PACK_FILES).all()
+    if not old:
+        return
+    kept = {p for (p,) in db.query(PackVersion.file_path).order_by(PackVersion.id.desc()).limit(KEEP_PACK_FILES)}
+    for row in old:
+        if row.file_path not in kept:
+            try:
+                os.remove(row.file_path)
+            except OSError:
+                pass  # already gone; the row is removed anyway
+        db.delete(row)
+    db.commit()

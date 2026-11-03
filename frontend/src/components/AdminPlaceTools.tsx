@@ -1,7 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { authFetch } from "../lib/auth";
 import "./Volunteer.css";
+
+/**
+ * The address printed boards point to. VITE_PUBLIC_ORIGIN (set at build time
+ * for the public site) wins; otherwise the address this admin page is on —
+ * which is wrong for a board when it is a test address (warned below).
+ */
+const BOARD_ORIGIN = (import.meta.env.VITE_PUBLIC_ORIGIN as string | undefined)?.replace(/\/+$/, "") || window.location.origin;
+const TEST_ORIGIN = /^https?:\/\/(localhost|127\.|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)|ngrok|\.local(:|$)|\.test(:|$)/i.test(BOARD_ORIGIN);
 
 export type PlaceToolsPlace = {
   code: string;
@@ -64,7 +72,14 @@ export function AdminPlaceTools({ apiBase, place, onChanged }: Props) {
 
   const until = place.op_status_until ? utc(place.op_status_until) : null;
   const live = place.op_status && until && until > new Date();
-  const boardUrl = place.board_code ? `${window.location.origin}/?at=${place.board_code}` : "";
+  const boardUrl = place.board_code ? `${BOARD_ORIGIN}/?at=${place.board_code}` : "";
+
+  // "Tap again to retire" does not stay armed: an accidental second tap minutes later must not retire a board.
+  useEffect(() => {
+    if (!confirmRetire) return;
+    const timer = window.setTimeout(() => setConfirmRetire(false), 5000);
+    return () => window.clearTimeout(timer);
+  }, [confirmRetire]);
 
   return (
     <div className="place-tools">
@@ -163,6 +178,12 @@ export function AdminPlaceTools({ apiBase, place, onChanged }: Props) {
                 <small>{boardUrl}</small>
               </div>
             </div>
+            {TEST_ORIGIN && (
+              <p className="gps-status err" role="alert">
+                This board would point to {BOARD_ORIGIN}, a test address — phones at the mela cannot open it. Print
+                boards from the public Setu site (or build with VITE_PUBLIC_ORIGIN set to it).
+              </p>
+            )}
             <div className="report-actions">
               <button type="button" className="btn soft" onClick={() => window.print()}>
                 Print board

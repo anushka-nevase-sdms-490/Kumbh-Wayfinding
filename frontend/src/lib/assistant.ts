@@ -5,7 +5,7 @@
  * invents a place, a status or a route — routes come from the normal router
  * when the visitor taps "Show the way". No external AI service is used.
  */
-import { normalizeText, opStatus, type OpStatus } from "./placeInfo";
+import { normalizeText, opStatus, soundKey, type OpStatus } from "./placeInfo";
 import { haversineM, isRegisteredLocation, type QrNode } from "./types";
 
 export type Topic =
@@ -49,7 +49,12 @@ const TOPIC_WORDS: Record<Topic, string[]> = {
 };
 
 const OPEN_WORDS = ["open", "closed", "working", "खुला", "खुली", "बंद", "उघड", "चालू"];
-const SAFETY_WORDS = ["safety", "safe", "tips", "rules", "advice", "सुरक्षा", "सूचना", "नियम", "सलाह", "सल्ला"];
+const SAFETY_WORDS = [
+  "safety", "safe", "tips", "rules", "advice", "सुरक्षा", "सूचना", "नियम", "सलाह", "सल्ला",
+  // "Is it dangerous to bathe at night?" — a question for the tips (not an emergency:
+  // see EMERGENCY_WORDS). Not "bathe" itself: "where can I bathe" is about ghats.
+  "danger", "खतरा", "खतरनाक", "सुरक्षित", "धोका", "धोकादायक",
+];
 
 /**
  * Words that mean someone may be in danger now. Checked FIRST: the answer
@@ -108,20 +113,67 @@ function topicOf(q: string): Topic | null {
   return order.find((t) => has(q, TOPIC_WORDS[t])) ?? null;
 }
 
-/** A place named in the question (longest name wins), from the saved data only. */
+// Words that do not tell one place from another ("Hanuman Mandir", "Parking").
+const GENERIC_NAME_KEYS = new Set(
+  ["mandir", "temple", "devi", "hanuman", "shri", "shree", "sri", "toilet", "parking", "ghat", "hospital",
+    "clinic", "bus", "stand", "station", "police", "chowky", "water", "drinking", "the", "of"].map(soundKey)
+);
+
+/**
+ * A place named in the question (longest name wins), from the saved data only.
+ * A name typed in Devanagari ("कालाराम मंदिर") also finds its English name by
+ * sound. Only a name that points at one place counts: a name shared by several
+ * places, or made only of generic words ("Parking", "Hanuman Mandir", "Devi
+ * Mandir"), is left to the nearest-places answer instead of picking one of them.
+ */
 function namedPlace(q: string, places: QrNode[]): QrNode | null {
+  const count = new Map<string, number>();
+  for (const p of places) count.set(normalizeText(p.name), (count.get(normalizeText(p.name)) ?? 0) + 1);
+  const distinctive = (p: QrNode, name: string) =>
+    count.get(normalizeText(p.name)) === 1 && soundKey(name).split(" ").some((w) => w && !GENERIC_NAME_KEYS.has(w));
   let best: QrNode | null = null;
   let bestLen = 0;
+  const qKey = ` ${soundKey(q)} `;
   for (const p of places) {
     for (const name of [p.name, p.local_name ?? ""]) {
       const n = normalizeText(name);
-      if (n.length >= 4 && q.includes(n) && n.length > bestLen) {
+      const k = soundKey(name);
+      const found = (n.length >= 4 && q.includes(n)) || (k.length >= 4 && qKey.includes(` ${k} `));
+      if (found && n.length > bestLen && distinctive(p, name)) {
         best = p;
         bestLen = n.length;
       }
     }
   }
   return best;
+}
+
+/**
+ * A hospital whose name says it treats one thing (eyes, teeth, births,
+ * children…): for "medical help" it counts as this much farther away, so a
+ * general hospital nearby comes first. The map data has no "emergency" tag.
+ */
+const SPECIALIST_RE =
+  /\b(eye|eyes|lasik|netra|dental|dentist|teeth|maternity|gyn\w*|obstetric\w*|ivf|fertility|child|children|paediatric|pediatric|skin|derma\w*|ent|ortho\w*|heart|cardiac|diabet\w*|physio\w*|psychiatr\w*)\b/i;
+const SPECIALIST_EXTRA_M = 1000;
+
+// "Maternity and General Hospital", "Dental and Accident Hospital": not only one specialty.
+const GENERAL_RE = /\b(general|multi\w*|accident|emergency|trauma|civil|casualty)\b/i;
+
+function isSpecialist(p: QrNode): boolean {
+  return p.node_type === "medical" && SPECIALIST_RE.test(p.name) && !GENERAL_RE.test(p.name);
+}
+
+/**
+ * Distance for ordering "medical help": specialist hospitals count as farther —
+ * unless the question asks for a specialty ("eye hospital", "heart attack").
+ */
+function helpDistance(h: PlaceHit, q: string): number {
+  if (!isSpecialist(h.node)) return h.distanceM ?? 0;
+  // Only the asked-for specialty is exempt: "heart attack" → heart hospitals, not the eye hospital.
+  const asked = new Set((q.match(new RegExp(SPECIALIST_RE.source, "gi")) ?? []).map((w) => w.toLowerCase()));
+  const own = (h.node.name.match(new RegExp(SPECIALIST_RE.source, "gi")) ?? []).map((w) => w.toLowerCase());
+  return (h.distanceM ?? 0) + (own.some((w) => asked.has(w)) ? 0 : SPECIALIST_EXTRA_M);
 }
 
 function hit(node: QrNode, from: { lat: number; lon: number } | null, now: Date): PlaceHit {
@@ -152,7 +204,7 @@ export function ask(question: string, ctx: AskContext): Answer {
       .filter((p) => isRegisteredLocation(p) && help.includes(p.node_type))
       .map((p) => hit(p, ctx.from, now))
       .filter((h) => h.status.kind !== "closed")
-      .sort((a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0))
+      .sort((a, b) => helpDistance(a, q) - helpDistance(b, q))
       .slice(0, 3);
     return { kind: "emergency", places };
   }
@@ -174,9 +226,10 @@ export function ask(question: string, ctx: AskContext): Answer {
     .sort((a, b) => {
       const closed = (h: PlaceHit) => (h.status.kind === "closed" ? 1 : 0);
       if (closed(a) !== closed(b)) return closed(a) - closed(b);
-      if (a.distanceM != null && b.distanceM != null && Math.abs(a.distanceM - b.distanceM) > 50)
-        return a.distanceM - b.distanceM;
-      return Number(b.fieldChecked) - Number(a.fieldChecked) || (a.distanceM ?? 0) - (b.distanceM ?? 0);
+      const da = helpDistance(a, q);
+      const db = helpDistance(b, q);
+      if (a.distanceM != null && b.distanceM != null && Math.abs(da - db) > 50) return da - db;
+      return Number(b.fieldChecked) - Number(a.fieldChecked) || da - db;
     });
   if (candidates.length === 0) return { kind: "none", topic };
   const top = candidates.slice(0, 3);

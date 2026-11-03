@@ -120,6 +120,18 @@ const TURN_NOW_M = 15;
 /** Off route: try this many nearest places/junctions as the new start. */
 const REROUTE_CANDIDATES = 25;
 
+const VISITOR_KEY = "setu-visitor";
+
+/** Remember (or forget) that this phone is used as a visitor; storage may be unavailable. */
+function rememberVisitor(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(VISITOR_KEY, "1");
+    else localStorage.removeItem(VISITOR_KEY);
+  } catch {
+    /* private mode: the choice is asked again next time */
+  }
+}
+
 /**
  * Random id this phone keeps, so its "path blocked" reports count as one
  * reporter (many phones share a mobile-network IP). Not linked to the person.
@@ -168,7 +180,15 @@ export default function App() {
   /** Name to show for a place; hidden map junctions have none. */
   const placeName = (n: QrNode) => (n.name.trim() ? placeLabel(n) : t("place.junction"));
   const categoryLabel = (nodeType: string) => t(`cat.${siteCategory(nodeType)}` as MessageKey);
-  const [mode, setMode] = useState<Mode>("gate");
+  // A pilgrim who chose "I am a visitor" goes straight to the visitor home next
+  // time (the back arrow there brings the choice back). Volunteers always start at the gate.
+  const [mode, setMode] = useState<Mode>(() => {
+    try {
+      return localStorage.getItem(VISITOR_KEY) === "1" ? "user" : "gate";
+    } catch {
+      return "gate";
+    }
+  });
   const [pack, setPack] = useState<OfflinePack>(FALLBACK_PACK);
   const [step, setStep] = useState<UserStep>("home");
   const [volStep, setVolStep] = useState<VolStep>("home");
@@ -185,6 +205,9 @@ export default function App() {
   const [navState, setNavState] = useState<NavState>("IDLE");
   const [gpsMsg, setGpsMsg] = useState<string | null>(null);
   const [rerouteMsg, setRerouteMsg] = useState<string | null>(null);
+  // "New way from …": kept on screen for a while (the walker is usually back on
+  // the new route at once, which clears rerouteMsg, so it used to flash by).
+  const [rerouteNote, setRerouteNote] = useState<{ text: string; at: number } | null>(null);
   /** "Route updated" when new data (a closure) changed the route during guidance. */
   const [dataRouteMsg, setDataRouteMsg] = useState<string | null>(null);
   /** Volunteer signed in on this phone (writes need it — backend app/auth.py). */
@@ -387,6 +410,7 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("mode") === "volunteer") {
+      rememberVisitor(false); // a volunteer's phone starts at the gate after sign-out
       setMode("volunteer");
       setVolStep("home");
       window.history.replaceState({}, "", window.location.pathname);
@@ -402,10 +426,14 @@ export default function App() {
     [pack]
   );
 
-  const destinations = useMemo(
-    () => registeredPlaces.filter((n) => n.code !== start?.code),
-    [registeredPlaces, start]
-  );
+  // Nearest first (straight line from the start), so the places around the
+  // pilgrim come before ones 30 km away; search keeps this order within its groups.
+  const destinations = useMemo(() => {
+    const list = registeredPlaces.filter((n) => n.code !== start?.code);
+    if (!start) return list;
+    const away = (n: QrNode) => haversineM(start.lat, start.lon, n.lat, n.lon);
+    return list.map((n) => [n, away(n)] as const).sort((a, b) => a[1] - b[1]).map(([n]) => n);
+  }, [registeredPlaces, start]);
 
   // Area / category filters, as on kumbhguidenashik.in/map.
   const [areaFilter, setAreaFilter] = useState<Area | "all">("all");
@@ -644,7 +672,15 @@ export default function App() {
   // new destination ("Clear temporary blocks" on the no-route screen lifts them).
   useEffect(() => {
     setRerouteMsg(null);
+    setRerouteNote(null);
   }, [dest?.code]);
+
+  // The "new way from …" note stays 15 s, then goes.
+  useEffect(() => {
+    if (!rerouteNote) return;
+    const timer = window.setTimeout(() => setRerouteNote(null), 15_000);
+    return () => window.clearTimeout(timer);
+  }, [rerouteNote]);
 
   // A new trip (or a fresh start point) must not inherit the last "arrived".
   useEffect(() => {
@@ -849,7 +885,9 @@ export default function App() {
       return;
     }
     setNavState((st) => nextNavState(st, "OBSTACLE"));
-    setRerouteMsg(named ? t("rr.newFrom", { name: placeLabel(from.node) }) : t("rr.newHere"));
+    setRerouteMsg(null);
+    // A new object each time: a second reroute with the same words restarts the 15 s.
+    setRerouteNote({ text: named ? t("rr.newFrom", { name: placeLabel(from.node) }) : t("rr.newHere"), at: Date.now() });
     setStart(from.node);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live.pos]);
@@ -882,6 +920,7 @@ export default function App() {
               type="button"
               className="role-card featured"
               onClick={() => {
+                rememberVisitor(true);
                 setMode("user");
                 setStep("home");
               }}
@@ -899,6 +938,7 @@ export default function App() {
               type="button"
               className="role-card"
               onClick={() => {
+                rememberVisitor(false);
                 setMode("volunteer");
                 setVolStep("home");
               }}
@@ -1193,7 +1233,10 @@ export default function App() {
           <TopBar
             title={t("home.title")}
             subtitle={t("home.subtitle")}
-            onBack={() => setMode("gate")}
+            onBack={() => {
+              rememberVisitor(false);
+              setMode("gate");
+            }}
           />
           <LangPicker compact />
           <ol className="how-steps">
@@ -1601,7 +1644,10 @@ export default function App() {
                   </span>
                   <strong>{placeLabel(n)}</strong>
                   {placeAltLabel(n) && <span className="dest-local">{placeAltLabel(n)}</span>}
-                  <small>{categoryLabel(n.node_type)}</small>
+                  <small>
+                    {start ? `${dist(haversineM(start.lat, start.lon, n.lat, n.lon))} · ` : ""}
+                    {categoryLabel(n.node_type)}
+                  </small>
                   <PlaceBadges node={n} compact />
                 </button>
               ))}
@@ -1754,6 +1800,11 @@ export default function App() {
               </p>
             )}
             {rerouteMsg && <p className="guide-gps warn">{rerouteMsg}</p>}
+            {rerouteNote && !rerouteMsg && (
+              <p className="guide-gps warn" role="status">
+                {rerouteNote.text}
+              </p>
+            )}
             {gpsMsg && <p className="guide-gps warn">{gpsMsg}</p>}
             <div className="guide-actions">
               <button type="button" className="btn primary" onClick={updatePositionFromGps}>

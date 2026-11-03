@@ -64,6 +64,16 @@ function inMapArea(you: MapFix): boolean {
   return you.lon >= w && you.lon <= e && you.lat >= s && you.lat <= n;
 }
 
+/**
+ * The name drawn on the map: the English name, without Devanagari. MapLibre
+ * cannot shape Devanagari (vowel signs land in the wrong place), so Hindi and
+ * Marathi names are shown in the lists and cards (which the browser shapes),
+ * not as map labels.
+ */
+function mapLabel(n: QrNode): string {
+  return n.name.replace(/[\u0900-\u097F\u200c\u200d]+/g, " ").replace(/\s{2,}/g, " ").trim();
+}
+
 function placesGeoJson(
   places: QrNode[],
   label: (n: QrNode) => string,
@@ -128,7 +138,7 @@ export function OfflineMap({
   onMapTap,
   focus = null,
 }: Props) {
-  const { t, lang, placeLabel } = useI18n();
+  const { t, lang } = useI18n();
   const box = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MlMap | null>(null);
   const [ready, setReady] = useState(false);
@@ -327,14 +337,14 @@ export function OfflineMap({
 
   useEffect(() => {
     if (!ready || !mapRef.current) return;
-    (mapRef.current.getSource("places") as GeoJSONSource).setData(
-      placesGeoJson(places, placeLabel, startCode, destCode, markUnconfirmed)
+    (mapRef.current.getSource("places") as GeoJSONSource | undefined)?.setData(
+      placesGeoJson(places, mapLabel, startCode, destCode, markUnconfirmed)
     );
-  }, [ready, places, startCode, destCode, placeLabel, markUnconfirmed]);
+  }, [ready, places, startCode, destCode, markUnconfirmed]);
 
   useEffect(() => {
     if (!ready || !mapRef.current) return;
-    (mapRef.current.getSource("lanes") as GeoJSONSource).setData(lanes ?? EMPTY);
+    (mapRef.current.getSource("lanes") as GeoJSONSource | undefined)?.setData(lanes ?? EMPTY);
   }, [ready, lanes]);
 
   useEffect(() => {
@@ -344,7 +354,7 @@ export function OfflineMap({
 
   useEffect(() => {
     if (!ready || !mapRef.current) return;
-    (mapRef.current.getSource("reports") as GeoJSONSource).setData({
+    (mapRef.current.getSource("reports") as GeoJSONSource | undefined)?.setData({
       type: "FeatureCollection",
       features: reportPins.map((r) => ({
         type: "Feature",
@@ -356,7 +366,7 @@ export function OfflineMap({
 
   useEffect(() => {
     if (!ready || !mapRef.current) return;
-    (mapRef.current.getSource("route") as GeoJSONSource).setData(
+    (mapRef.current.getSource("route") as GeoJSONSource | undefined)?.setData(
       route.length >= 2
         ? {
             type: "Feature",
@@ -369,7 +379,7 @@ export function OfflineMap({
 
   useEffect(() => {
     if (!ready || !mapRef.current) return;
-    (mapRef.current.getSource("route-map-roads") as GeoJSONSource).setData({
+    (mapRef.current.getSource("route-map-roads") as GeoJSONSource | undefined)?.setData({
       type: "FeatureCollection",
       features: mapRoads
         .filter((part) => part.length >= 2)
@@ -383,7 +393,7 @@ export function OfflineMap({
 
   useEffect(() => {
     if (!ready || !mapRef.current) return;
-    (mapRef.current.getSource("you") as GeoJSONSource).setData(youGeoJson(you));
+    (mapRef.current.getSource("you") as GeoJSONSource | undefined)?.setData(youGeoJson(you));
   }, [ready, you]);
 
   // Fit the camera to the route, else the visitor, else every place.

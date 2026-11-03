@@ -74,7 +74,8 @@ document with the details.
 ## Languages
 
 - The Hindi and Marathi texts were written by the developer and checked only by automated rules. **A native-speaker review is needed** before the pilot.
-- Place names come from OpenStreetMap; many have no Devanagari name.
+- Place names come from OpenStreetMap; many have no Devanagari name, so they are shown in English. Typing a name in Devanagari finds them by sound ("कालाराम" → Kalaram Mandir), but a place called only by a generic English word ("Toilet", "Parking") is not found by its Hindi/Marathi word (use the category filter or Ask Setu). Some names carry OpenStreetMap typos ("Sti Datta Paduka", "Cantoment"), 13 places are just "Parking", and Kalaram Mandir appears twice — data cleanup for the field pilot.
+- **Ask Setu's "medical help"** ranks hospitals whose name shows a specialty (eye, dental, maternity, children's, heart…) as if 1 km farther, so a general hospital nearby comes first. The map data does not say which hospitals take emergencies; this needs checking in the field.
 
 ## Security and privacy
 
@@ -95,7 +96,7 @@ See `SECURITY_AND_PRIVACY.md` for the full list. In short:
 ## Deployment
 
 - **Not deployed.** There is no server or domain yet. No monitoring is set up, and backups aren't yet copied off the server. (`DEPLOYMENT_READINESS.md`)
-- **Committed on the branch `kunal-offline-map-integration`, not pushed or merged.** The offline map files (`frontend/public/map/`, about 15 MB) are not in git.
+- **Committed on the branch `kunal-offline-map-integration` and pushed; no pull request or merge yet.** The offline map files (`frontend/public/map/`, about 15 MB) are not in git.
 
 ## Simulation
 

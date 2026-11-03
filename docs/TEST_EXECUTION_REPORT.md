@@ -29,12 +29,12 @@
 | Type check | `cd frontend && npx tsc -b` | 0 errors | 0 errors | PASS |
 | Lint | `npm run lint` | 0 errors | 0 errors, 0 warnings | PASS |
 | Production build | `npm run build` | OK | OK. No simulation code in `dist/` | PASS |
-| Routing and phone logic | `npm run test:routing` | 198 / 198 | **217 / 217** | PASS |
-| API checks, SQLite | `cd backend && .venv/bin/python scripts/run_api_checks.py` | 200 / 200 | **218 / 218** | PASS |
-| API checks, PostgreSQL 16 (empty DB) | same, with `SETU_TEST_DATABASE_URL` | not run at baseline | **216 / 216** (2 dataset-build checks run on SQLite only) | PASS |
+| Routing and phone logic | `npm run test:routing` | 198 / 198 | **240 / 240** | PASS |
+| API checks, SQLite | `cd backend && .venv/bin/python scripts/run_api_checks.py` | 200 / 200 | **225 / 225** | PASS |
+| API checks, PostgreSQL 16 (empty DB) | same, with `SETU_TEST_DATABASE_URL` | not run at baseline | **223 / 223** (2 dataset-build checks run on SQLite only) | PASS |
 | Old database upgrade | `scripts/check_migration.py` | All OK | All OK | PASS |
 | Graph check, copy of the real database | `scripts/validate_graph.py` (copy) | OK | OK (0 unsafe river crossings) | PASS |
-| Browser test, headless Chrome | `scripts/smoke_browser.py` | 30 / 30 | **30 / 30** | PASS |
+| Browser test, headless Chrome | `scripts/smoke_browser.py` | 30 / 30 | **31 / 31** | PASS |
 | Runtime dependency audit | `npm audit --omit=dev` | 0 | 0 | PASS |
 
 ## 2. Test execution matrix
@@ -48,6 +48,14 @@
 | Servers stopped, reload the app | Offline | App opens from the service worker | Opened; places loaded from IndexedDB | PASS |
 | Map tiles draw offline | Offline | Map drawn from saved tiles | Route drawn on the map (browser test) | PASS |
 | Search places offline | Offline | Results from the saved data | "kala" → Kalaram Mandir first, with its Closed badge | PASS |
+| Search by a name typed in Devanagari | Navigation | "कालाराम" finds Kalaram Mandir | T40; seen failing in the live run before the fix | PASS |
+| Emergency help: general hospital before an eye hospital | Ask Setu | General hospital first | T40 | PASS |
+| Visitor choice remembered on the next visit | Navigation | Opens the visitor home directly | Browser test (new step) | PASS |
+| Recorded walk: standing still adds nothing; must start/end at the right places | Volunteer | Real length kept; wrong ends refused | T41 | PASS |
+| Reopening a lane marked as a wall | Volunteer | Becomes walkable on phones | API check | PASS |
+| Two lanes between the same places: lane_id | Admin | Only the chosen lane changes | API check | PASS |
+| Old pack files deleted | Database | Newest kept | API check | PASS |
+| Devanagari map labels shaped correctly | Map | — | Labels now English (Devanagari in lists); needs a look on a real phone | NOT TESTED |
 | Walking route offline | Offline | Route found on the phone | Ramkund → Kalaram "413 m · about 6 min" | PASS |
 | Ask Setu offline | Offline | Nearest medical help from the saved data | Answered; Hindi question answered; honest "cannot answer" | PASS |
 | Reconnect: sync | Offline | Waiting changes and SOS sent; stale warning cleared | Queue emptied; place and walk saved once; SOS → SENT; stale warning cleared | PASS |
@@ -168,7 +176,7 @@
 
 | Test Case | Module | Expected Result | Actual Result | Status |
 |---|---|---|---|---|
-| All API checks on PostgreSQL 16 | Database | Same as SQLite | 216 / 216 | PASS |
+| All API checks on PostgreSQL 16 | Database | Same as SQLite | 223 / 223 | PASS |
 | Old database upgrades without loss | Database | Columns added, data kept, repeatable | `check_migration.py` All OK | PASS |
 | New `sos_alerts.asked_at` column on old databases | Database | Added automatically | `_ensure_columns`; migration check and Postgres run | PASS |
 | NaN / Infinity coordinates | Validation | 422, not saved, no 500 | API check (new) | PASS |
@@ -195,11 +203,32 @@
 | Professional penetration test | Security | — | Not performed | BLOCKED |
 | Load test on the production server | Performance | — | No server chosen yet | BLOCKED |
 
+## 2b. End-to-end live test in Chrome (manual publishing, database copy)
+
+| Test Case | Module | Expected Result | Actual Result | Status |
+|---|---|---|---|---|
+| App update prompt | Offline | "A new version is ready" → Reload applies it | Shown and applied | PASS |
+| New pilgrim: offline map, start, Devanagari search, route | Navigation | Works | Map saved; "Ramkund Ghat · 2 m"; "कालाराम" → Kalaram Mandir 287 m; route 412 m with turns | PASS |
+| Simulated walk to arrival | Navigation | "You have arrived" | Shown | PASS |
+| Wrong turn | Navigation | New route; the note stays visible | "You left the route — new way from here", visible about 19 s | PASS |
+| Visitor choice remembered | Navigation | Visitor home on reload | Yes | PASS |
+| Servers stopped: app, Ask Setu (Marathi), SOS, route | Offline | Works; SOS "Not sent yet" | Emergency box first (police post first); "Medical help" pre-selected; "Not sent yet — saved on this phone"; route to Sita Gufa 546 m | PASS |
+| Servers back: SOS delivered | SOS | Sent by itself | "Received by the Setu server" | PASS |
+| Operator acknowledges with a quick reply | SOS | Pilgrim sees it in their language | Shown in Marathi | PASS |
+| Pilgrim reports a blocked lane | Navigation | New route at once | "Thanks — you get a new way" | PASS |
+| Volunteer confirms the report; reopens the lane | Volunteer | Lane closed, listed, reopened, back on phones | Yes (server checked); names and messages fixed during the test | PASS |
+| Manual publishing: trust change waits; publish; rollback | Admin | Waits; Version 2; back to Version 1 on phones | Yes (data on phones checked) | PASS |
+| QR board on a test address | Admin | Warning shown | Warning shown | PASS |
+| Pilgrim opens the board link | Navigation | "You are at <place> · From board <code>" | Yes | PASS |
+| Server errors during the run | All | None | 0 | PASS |
+
 ## 3. Failures during this cycle
 
 | What | Cause | Resolution |
 |---|---|---|
 | One new API check failed once (`OSM-…` code: 422 instead of 400) | **The test** omitted a required field (`local_name`), so the request was refused for that reason | The test request was fixed. The check then passed (400) |
+
+After the live-run fixes, one browser run failed 10 of 31 steps: the test still expected the "visitor or volunteer?" screen, which the phone now skips once "visitor" was chosen. The test was updated (volunteers reach the choice through the back arrow, as users do) and the next run passed 31/31.
 
 No other test failure occurred. The independent review of the fixes found 6 more problems (B-29 to B-34 in the code review report). Each got a fix and a regression test, and all suites were run again afterwards. No safety rule or validation was weakened to make a test pass.
 

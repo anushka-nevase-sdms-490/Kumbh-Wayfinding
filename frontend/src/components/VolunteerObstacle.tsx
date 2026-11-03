@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { isRegisteredLocation, type GraphEdge, type QrNode } from "../lib/types";
+import { formatDistance } from "../lib/nearest";
+import { haversineM, isRegisteredLocation, type GraphEdge, type QrNode } from "../lib/types";
 import { authSender, sendOrQueue } from "../lib/outbox";
 import { loadVolunteerData } from "../lib/volunteerData";
 import { VisitorReports } from "./VisitorReports";
@@ -28,6 +29,8 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Bumped after a saved change, so the list shows the lane's new state (no stale "✕ blocked").
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,7 +48,7 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [apiBase]);
+  }, [apiBase, reloadKey]);
 
   // The Devanagari name in Hindi/Marathi when the place has one.
   const nameOf = (code: string) => {
@@ -59,8 +62,28 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
     // Volunteer lanes between real places (map roads have thousands of hidden
     // junctions), plus any map-road lane that is closed now — e.g. a visitor's
     // report a volunteer confirmed — so it can be reopened here too.
-    const codes = new Set(nodes.filter(isRegisteredLocation).map((n) => n.code.toUpperCase()));
-    const isClosed = (e: (typeof edges)[number]) => !!e.blocked || e.door_state === "closed" || e.walkable === false;
+    const places = nodes.filter(isRegisteredLocation);
+    const codes = new Set(places.map((n) => n.code.toUpperCase()));
+    const byCode = new Map(nodes.map((n) => [n.code.toUpperCase(), n]));
+    // A map road joins hidden junctions: its street name and the nearest named place say where it is.
+    const mapRoadName = (e: GraphEdge) => {
+      const a = byCode.get(e.from_code.toUpperCase());
+      const b = byCode.get(e.to_code.toUpperCase());
+      let near = "";
+      if (a && b) {
+        const lat = (a.lat + b.lat) / 2;
+        const lon = (a.lon + b.lon) / 2;
+        const best = places
+          .map((n) => [n, haversineM(lat, lon, n.lat, n.lon)] as const)
+          .sort((x, y) => x[1] - y[1])[0];
+        if (best) near = t("vol.obstacle.near", { place: placeLabel(best[0]), dist: formatDistance(best[1]) });
+      }
+      return [e.name || t("vol.obstacle.mapRoad"), near, `#${e.id}`].filter(Boolean).join(" · ");
+    };
+    // A "wall" lane is impassable on phones too (lib/router.ts), so it counts as closed.
+    const isClosed = (e: (typeof edges)[number]) =>
+      !!e.blocked || e.door_state === "closed" || e.walkable === false ||
+      ["wall", "glass_wall"].includes((e.passage_kind ?? "").toLowerCase());
     return edges
       .filter(
         (e) =>
@@ -68,15 +91,18 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
           (e.source === "osm" && isClosed(e))
       )
       .map((e) => ({
-        key: `${e.from_code.toUpperCase()}|${e.to_code.toUpperCase()}`,
+        key: `${e.from_code.toUpperCase()}|${e.to_code.toUpperCase()}|${e.id}`,
+        id: e.id,
         a: e.from_code,
         b: e.to_code,
         closed: isClosed(e),
-        mapRoad: e.source === "osm" ? `${e.name ? `${e.name} · ` : ""}${t("vol.obstacle.mapRoad")} #${e.id}` : null,
+        mapRoad: e.source === "osm" ? mapRoadName(e) : null,
       }));
-  }, [edges, nodes, t]);
+  }, [edges, nodes, t, placeLabel]);
 
   const lane = lanes.find((l) => l.key === laneKey) ?? null;
+  // One name for the lane in messages and the queue: map roads have no place names at their ends.
+  const laneText = lane ? (lane.mapRoad ?? `${nameOf(lane.a)} ↔ ${nameOf(lane.b)}`) : "";
   const fromCode = lane?.a ?? "";
   const toCode = lane?.b ?? "";
 
@@ -95,6 +121,7 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
         {
           from_code: fromCode,
           to_code: toCode,
+          lane_id: lane?.id,
           blocked,
           door_state: doorState,
           passage_kind: passageKind,
@@ -109,9 +136,9 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
               : true,
         },
         {
-          label: `${closing ? "Block" : "Update"} ${nameOf(fromCode)} ↔ ${nameOf(toCode)}`,
-          labelKey: closing ? "vol.label.block" : "vol.label.update",
-          labelVars: { a: nameOf(fromCode), b: nameOf(toCode) },
+          label: `${closing ? "Block" : "Update"} ${laneText}`,
+          labelKey: closing ? "vol.label.blockLane" : "vol.label.updateLane",
+          labelVars: { lane: laneText },
         },
         authSender(apiBase)
       );
@@ -123,7 +150,8 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
         setMsg(t("vol.queued"));
         return;
       }
-      setMsg(t(closing ? "vol.obstacle.removed" : "vol.obstacle.reopened", { a: nameOf(fromCode), b: nameOf(toCode) }));
+      setMsg(t(closing ? "vol.obstacle.removedLane" : "vol.obstacle.reopenedLane", { lane: laneText }));
+      setReloadKey((k) => k + 1);
       onSaved();
     } catch {
       setErr(t("vol.networkError"));
@@ -148,15 +176,16 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
         {
           from_code: fromCode,
           to_code: toCode,
+          lane_id: lane?.id,
           blocked: false,
           door_state: doorState === "closed" ? "open" : doorState,
           walkable: true,
           obstacle_note: null,
         },
         {
-          label: `Reopen ${nameOf(fromCode)} ↔ ${nameOf(toCode)}`,
-          labelKey: "vol.label.reopen",
-          labelVars: { a: nameOf(fromCode), b: nameOf(toCode) },
+          label: `Reopen ${laneText}`,
+          labelKey: "vol.label.reopenLane",
+          labelVars: { lane: laneText },
         },
         authSender(apiBase)
       );
@@ -168,7 +197,8 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
         setMsg(t("vol.queued"));
         return;
       }
-      setMsg(t("vol.obstacle.reopened", { a: nameOf(fromCode), b: nameOf(toCode) }));
+      setMsg(t("vol.obstacle.reopenedLane", { lane: laneText }));
+      setReloadKey((k) => k + 1);
       onSaved();
     } catch {
       setErr(t("vol.networkError"));
@@ -189,13 +219,24 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
         </div>
       </header>
 
-      <VisitorReports apiBase={apiBase} onSaved={onSaved} />
+      <VisitorReports
+        apiBase={apiBase}
+        onSaved={() => {
+          // A confirmed report closes a lane: show it in the list below (to reopen later).
+          setReloadKey((k) => k + 1);
+          onSaved();
+        }}
+      />
 
       {loaded && lanes.length === 0 ? (
-        <div className="empty-state">
-          <strong>{t("vol.noLanesTitle")}</strong>
-          <p>{t("vol.noLanesBody")}</p>
-        </div>
+        <>
+          {/* The lane just reopened leaves the list: its confirmation still shows. */}
+          {msg && <p className="gps-status ok">{msg}</p>}
+          <div className="empty-state">
+            <strong>{t("vol.noLanesTitle")}</strong>
+            <p>{t("vol.noLanesBody")}</p>
+          </div>
+        </>
       ) : (
       <div className="volunteer-form">
         <p className="field-hint">{t("vol.obstacle.intro")}</p>
