@@ -65,6 +65,9 @@ export function VolunteerRegisterForm({
   const [dup, setDup] = useState<DupInfo | null>(null);
   const [done, setDone] = useState<QrNode | null>(null);
   const [existingPlaces, setExistingPlaces] = useState<QrNode[]>([]);
+  // Until the list is here, an empty list does not mean "first place": saving
+  // then would add a place with no lane (and skip the walk check).
+  const [placesState, setPlacesState] = useState<"loading" | "ready" | "failed">("loading");
   const [connectTo, setConnectTo] = useState("");
   const [recording, setRecording] = useState(false);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
@@ -125,9 +128,14 @@ export function VolunteerRegisterForm({
     let cancelled = false;
     (async () => {
       const data = await loadVolunteerData(apiBase);
-      if (!data || cancelled) return;
+      if (cancelled) return;
+      if (!data) {
+        setPlacesState("failed");
+        return;
+      }
       const list = data.nodes.filter(isRegisteredLocation);
       setExistingPlaces(list);
+      setPlacesState("ready");
       setPlacesFromPhone(data.fromPhone);
       if (list.length === 1) setConnectTo(list[0].code);
     })();
@@ -707,16 +715,18 @@ export function VolunteerRegisterForm({
           </div>
         )}
 
-        {existingPlaces.length === 0 && (
+        {placesState === "ready" && existingPlaces.length === 0 && (
           <p className="field-hint">{t("vol.reg.firstPlace")}</p>
         )}
+        {placesState === "loading" && <p className="field-hint">{t("vol.reg.placesLoading")}</p>}
+        {placesState === "failed" && <p className="gps-status err">{t("vol.reg.placesFailed")}</p>}
 
         {formError && <p className="gps-status err">{formError}</p>}
 
         <button
           type="submit"
           className="btn primary block"
-          disabled={submitting || gps.status !== "ok" || recording}
+          disabled={submitting || gps.status !== "ok" || recording || placesState !== "ready"}
         >
           {submitting
             ? t("vol.saving")

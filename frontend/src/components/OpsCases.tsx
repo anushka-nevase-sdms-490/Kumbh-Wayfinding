@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { authFetch } from "../lib/auth";
 import { isRegisteredLocation, type QrNode } from "../lib/types";
 import "./Volunteer.css";
@@ -108,9 +108,13 @@ export function OpsCases({ apiBase, places, prefill, onBack, renderReportHelper 
   const named = places.filter(isRegisteredLocation);
   const placeName = (code: string | null) => (code ? (named.find((p) => p.code === code)?.name ?? code) : "—");
 
+  // Typing in the search starts a request per key: only the newest answer is shown.
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const res = await authFetch(`${apiBase}/api/ops/cases?status=${filter}&q=${encodeURIComponent(q)}`);
+      if (seq !== loadSeq.current) return;
       if (!res.ok) {
         setErr(
           res.status === 404
@@ -122,10 +126,12 @@ export function OpsCases({ apiBase, places, prefill, onBack, renderReportHelper 
         setList([]);
         return;
       }
-      setList((await res.json()) as Summary[]);
+      const rows = (await res.json()) as Summary[];
+      if (seq !== loadSeq.current) return;
+      setList(rows);
       setErr(null);
     } catch {
-      setErr("No connection to the server.");
+      if (seq === loadSeq.current) setErr("No connection to the server.");
     }
   }, [apiBase, filter, q]);
 
@@ -145,7 +151,8 @@ export function OpsCases({ apiBase, places, prefill, onBack, renderReportHelper 
       const out = await res.json().catch(() => null);
       if (!res.ok) {
         setErr(typeof out?.detail === "string" ? out.detail : "Could not save");
-        if (res.status === 409 && open) await openCase(open.case_ref);
+        // Someone else changed the case: show the latest details, keep what this operator typed.
+        if (res.status === 409 && open) await openCase(open.case_ref, true);
         return null;
       }
       await load();
@@ -158,12 +165,20 @@ export function OpsCases({ apiBase, places, prefill, onBack, renderReportHelper 
     }
   }
 
-  async function openCase(ref: string) {
-    const res = await authFetch(`${apiBase}/api/ops/cases/${ref}`);
-    if (res.ok) {
+  async function openCase(ref: string, keepEdits = false) {
+    try {
+      const res = await authFetch(`${apiBase}/api/ops/cases/${ref}`);
+      if (!res.ok) {
+        setErr(res.status === 404 ? "This case no longer exists." : "Could not open the case.");
+        return;
+      }
       setOpen((await res.json()) as Detail);
-      setEditing(false);
-      setNote("");
+      if (!keepEdits) {
+        setEditing(false);
+        setNote("");
+      }
+    } catch {
+      setErr("No connection to the server — the case cannot be opened.");
     }
   }
 

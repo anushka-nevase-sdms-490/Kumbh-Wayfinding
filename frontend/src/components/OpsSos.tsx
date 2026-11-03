@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authFetch } from "../lib/auth";
 import { formatDistance } from "../lib/nearest";
+import { SOS_PRESETS } from "../lib/sos";
 import { haversineM, isRegisteredLocation, type QrNode } from "../lib/types";
 import "./Volunteer.css";
 
@@ -14,6 +15,8 @@ type Alert = {
   place_code: string | null;
   lang: string | null;
   created_at: string;
+  /** When the visitor pressed "Send" (phone clock); null from older apps. */
+  asked_at: string | null;
   status: "received" | "acknowledged" | "resolved";
   ack_at: string | null;
   ack_message: string | null;
@@ -29,7 +32,8 @@ type Props = {
 };
 
 const KIND_LABEL = { medical: "Medical help", lost: "Someone is lost", unsafe: "Unsafe crowd", other: "Other help" };
-const PRESETS = ["A volunteer is coming to you", "Go to the nearest help desk", "Stay where you are — help is coming"];
+// Shown to the visitor in their own language (SOS_PRESETS); anything typed is shown as typed.
+const PRESETS = Object.values(SOS_PRESETS);
 
 /** A new alert arrived: vibrate and play a short tone (no sound files, works offline). */
 function notifyNew(): void {
@@ -113,11 +117,11 @@ export function OpsSos({ apiBase, places, onBack, onOpenCase }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(action === "ack" ? { message: msg[a.id] || null } : {}),
       });
-      if (!res.ok) {
-        const out = await res.json().catch(() => null);
-        setErr(typeof out?.detail === "string" ? out.detail : "Could not save");
-      }
-      await load();
+      const out = res.ok ? null : await res.json().catch(() => null);
+      await load(); // clears the error line on success, so the refusal is shown after it
+      if (!res.ok) setErr(typeof out?.detail === "string" ? out.detail : "Could not save");
+    } catch {
+      setErr("No connection to the server — not saved. Try again.");
     } finally {
       setBusy(null);
     }
@@ -166,6 +170,12 @@ export function OpsSos({ apiBase, places, onBack, onOpenCase }: Props) {
             <small className="flood-mark">
               Possible flood: many alerts from the same network in the last hour. Still check it — real alerts can be among
               them.
+            </small>
+          )}
+          {a.asked_at && utc(a.created_at).getTime() - utc(a.asked_at).getTime() > 2 * 60_000 && (
+            <small className="flood-mark">
+              Sent from the phone {ago(a.asked_at)} (phone clock) but received {ago(a.created_at)} — it waited without a
+              connection. The position may be old.
             </small>
           )}
           <small>{where(a)}</small>

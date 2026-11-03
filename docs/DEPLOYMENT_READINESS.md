@@ -24,7 +24,7 @@ Nothing has been deployed. The work is committed on `kunal-offline-map-integrati
 | Backups | `deploy/backup.sh` (nightly `pg_dump`, 14 days); **restore tested** on Postgres 16 |
 | Security | Access review (45 endpoints, 4 roles), public data minimised, size limits, sign-in limits per account and per network address, tightened CSP tested in the browser, no third parties (`SECURITY_AND_PRIVACY.md`) |
 | Visitor safety | QR boards, facility status with expiry, SOS with truthful states and an operator console, lost-person cases (off until approved), offline "Ask Setu" with emergencies first, operations summary |
-| Tests | 198 phone-logic + 200 API checks (SQLite and Postgres) + 30 browser checks under the production CSP + migration check; no network needed (`TESTING_AND_QA.md`, `E2E_TEST_PLAN.md`) |
+| Tests | 217 phone-logic + 218 API checks (SQLite; 216 on Postgres) + 30 browser checks under the production CSP + migration check; no network needed (`TESTING_AND_QA.md`, `E2E_TEST_PLAN.md`) |
 
 ## Needed from the owner
 

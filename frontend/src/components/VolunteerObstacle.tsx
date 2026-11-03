@@ -56,22 +56,25 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
   // Every known lane between registered boards, including blocked ones (✕) so
   // they can be reopened.
   const lanes = useMemo(() => {
-    // Volunteer lanes between real places (map roads have thousands of hidden junctions).
+    // Volunteer lanes between real places (map roads have thousands of hidden
+    // junctions), plus any map-road lane that is closed now — e.g. a visitor's
+    // report a volunteer confirmed — so it can be reopened here too.
     const codes = new Set(nodes.filter(isRegisteredLocation).map((n) => n.code.toUpperCase()));
+    const isClosed = (e: (typeof edges)[number]) => !!e.blocked || e.door_state === "closed" || e.walkable === false;
     return edges
       .filter(
         (e) =>
-          e.source !== "osm" &&
-          codes.has(e.from_code.toUpperCase()) &&
-          codes.has(e.to_code.toUpperCase())
+          (e.source !== "osm" && codes.has(e.from_code.toUpperCase()) && codes.has(e.to_code.toUpperCase())) ||
+          (e.source === "osm" && isClosed(e))
       )
       .map((e) => ({
         key: `${e.from_code.toUpperCase()}|${e.to_code.toUpperCase()}`,
         a: e.from_code,
         b: e.to_code,
-        closed: !!e.blocked || e.door_state === "closed" || e.walkable === false,
+        closed: isClosed(e),
+        mapRoad: e.source === "osm" ? `${e.name ? `${e.name} · ` : ""}${t("vol.obstacle.mapRoad")} #${e.id}` : null,
       }));
-  }, [edges, nodes]);
+  }, [edges, nodes, t]);
 
   const lane = lanes.find((l) => l.key === laneKey) ?? null;
   const fromCode = lane?.a ?? "";
@@ -138,6 +141,7 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
     setDoorState("open");
     setBusy(true);
     setErr(null);
+    setMsg(null);
     try {
       const r = await sendOrQueue(
         "/api/volunteer/edge-status",
@@ -204,7 +208,7 @@ export function VolunteerObstacle({ apiBase, onBack, onSaved }: Props) {
             </option>
             {lanes.map((l) => (
               <option key={l.key} value={l.key}>
-                {nameOf(l.a)} ↔ {nameOf(l.b)}
+                {l.mapRoad ?? `${nameOf(l.a)} ↔ ${nameOf(l.b)}`}
                 {l.closed ? t("vol.obstacle.blockedTag") : ""}
               </option>
             ))}

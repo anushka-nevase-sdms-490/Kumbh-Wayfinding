@@ -822,6 +822,8 @@ button {
   color: var(--ink);
   border-radius: 999px;
   padding: 6px 12px;
+  /* Touch target: SOS kinds and the language picker use these chips. */
+  min-height: 44px;
   font-size: 0.85rem;
   cursor: pointer;
 }
@@ -1292,7 +1294,9 @@ button {
   font-weight: 800;
   background: none;
   border: 0;
-  padding: 0;
+  /* A bigger touch area ("Send SOS") without moving the text around it. */
+  padding: 12px 6px;
+  margin: -12px -6px;
   text-decoration: underline;
   cursor: pointer;
 }

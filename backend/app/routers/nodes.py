@@ -152,9 +152,11 @@ def sync_batch(
                     existing.heading_ab,
                 )
                 if existing.path_json:
-                    existing.path_json = json.dumps(
-                        list(reversed(json.loads(existing.path_json)))
-                    )
+                    try:
+                        pts = json.loads(existing.path_json)
+                    except ValueError:
+                        pts = None
+                    existing.path_json = json.dumps(list(reversed(pts))) if isinstance(pts, list) else None
             existing.from_code = e.from_code
             existing.to_code = e.to_code
             for k, v in e.model_dump(exclude_unset=True).items():

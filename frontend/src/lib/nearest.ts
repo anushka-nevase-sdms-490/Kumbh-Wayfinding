@@ -29,6 +29,33 @@ export function placesByDistance(
     .sort((a, b) => a.distanceM - b.distanceM);
 }
 
+/**
+ * Off the route: where the new route starts. Only points near the walker (map
+ * junctions count: the nearest road point is usually the best restart) — the
+ * phone has no river data, so a restart farther away could be across the
+ * Godavari or behind a wall. None near enough → null (head back to the route).
+ */
+export const REROUTE_MAX_M = 50;
+
+export function rerouteStart(
+  nodes: QrNode[],
+  pos: { lat: number; lon: number },
+  destCode: string,
+  canReach: (code: string) => boolean,
+  maxM: number = REROUTE_MAX_M,
+  candidates = 25
+): PlaceDistance | null {
+  return (
+    nodes
+      .filter((n) => Number.isFinite(n.lat) && Number.isFinite(n.lon) && n.code !== destCode)
+      .map((node) => ({ node, distanceM: haversineM(pos.lat, pos.lon, node.lat, node.lon) }))
+      .filter((d) => d.distanceM <= maxM)
+      .sort((a, b) => a.distanceM - b.distanceM)
+      .slice(0, candidates)
+      .find((d) => canReach(d.node.code)) ?? null
+  );
+}
+
 export type StartSuggestion =
   | { kind: "none"; reason: "no_fix" | "weak_fix" | "no_places" }
   /** Nearest place is farther than MAX_SUGGEST_M. */

@@ -1,8 +1,9 @@
 # Known limitations
 
 Everything known not to work, not to be checked, or to work only within
-limits, in one place (2026-10-30). Each item points to the document with the
-details.
+limits, in one place (2026-10-30, updated 2026-11-03 after the code review:
+`CODE_REVIEW_AND_BUG_FIX_REPORT.md`, section 13). Each item points to the
+document with the details.
 
 ## Data
 
@@ -25,7 +26,9 @@ details.
 
 - **GPS in crowds and near water** can be off by tens of metres. Arrival is announced within about 20 m (allowing for the GPS accuracy); a fix rougher than ±30 m is never used to place the visitor at the start. Tested in simulation, not on site.
 - **Compass** quality varies by phone, and iOS asks for permission. The lane directions were set by volunteers' walks; none have been walked yet.
-- Re-routing happens when the visitor leaves the route, not because of live crowding.
+- Re-routing happens when the visitor leaves the route, not because of live crowding. The new route starts only from a point within 50 m of the visitor (the phone has no river data); farther off, the visitor is told to head back to the route line.
+- **Lanes people add that cross water** (a river line or a riverbank area) stay out of the pack until an admin approves them, also when labelled "bridge" and also for recorded walks. OSM street lanes are checked against river lines, not riverbank areas (only OSM connectors are checked against areas).
+- "Path blocked" right after leaving a place may block only the short link to the road (not confirmed; check in the pilot).
 - Guidance needs location permission. Without it, the visitor picks their start place by hand.
 
 ## Offline
@@ -42,6 +45,8 @@ details.
 - **Sign-in needs internet once per shift** (16 h).
 - A block report sent late (queued offline) takes effect when it arrives; its hours count from then.
 - **On a shared phone,** another volunteer's waiting changes are sent only when that volunteer signs in again.
+- **A recorded walk never reopens a closed lane** (it may have been queued from before the closure): reopen it with "Reopen" on the blocked-lane screen.
+- **5 wrong PINs pause an account for 15 minutes,** also when someone else typed them (the per-network limit slows this; `manage_volunteers.py enable` lifts it).
 - **Still in English:** messages written by the server (e.g. "GPS is only accurate to …") and the compass sensor notes. (`VOLUNTEER_WORKFLOW.md`)
 
 ## Admin
@@ -56,7 +61,9 @@ details.
 ## Visitor safety (Phases 5–7)
 
 - **SOS goes to Setu operators, not to 112.** The app says so everywhere and always shows "Call 112". Whether anyone answers depends on a staffed console (not yet agreed with the authority).
-- **"Not sent yet" alerts** wait on the phone until it has a connection; there is no SMS fallback.
+- **"Not sent yet" alerts** wait on the phone until it has a connection; there is no SMS fallback. An answer that is not from Setu (e.g. a Wi-Fi login page) keeps the alert waiting. An alert sent late shows operators when "Send" was pressed (by the phone's clock).
+- **The operator's quick replies** are shown in the visitor's language; anything an operator types is shown as typed (no translation).
+- **Fake SOS alerts** from phones that change their device id are not refused (per-phone limit avoided); operators see every open alert, possible floods last, but many fakes still make a long list.
 - **Lost-person cases are off in production** until the authority approves them (`CASES_ENABLED`).
 - **"Ask Setu" understands set topics and place names**, not free conversation; no external AI is used. Its emergency words in Hindi and Marathi need a native-speaker review. Safety tips are general, not official.
 - **The report helper** recognises common words and patterns only; every suggestion must be checked by the operator.

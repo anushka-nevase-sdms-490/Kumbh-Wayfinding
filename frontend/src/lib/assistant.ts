@@ -61,11 +61,20 @@ const EMERGENCY_WORDS = [
   "emergency", "urgent", "help me", "save me", "bleeding", "blood", "unconscious", "fainted", "not breathing",
   "can't breathe", "cannot breathe", "heart attack", "chest pain", "fire", "drowning", "accident", "injured",
   "stampede", "crush", "attacked", "snake bite", "fell down", "collapsed", "fits", "seizure",
+  // Not "danger"/खतरा/धोका or a bare "snake": "is it dangerous to bathe at night?"
+  // and "snake charmers" are questions for the safety tips, not emergencies.
+  "snakebite", "bitten by a snake", "stabbed", "stabbing", "bachao", "aag lag",
   "बचाओ", "मदद करो", "खून", "बेहोश", "सांस नहीं", "साँस नहीं", "दिल का दौरा", "आग", "डूब", "दुर्घटना", "भगदड़", "घायल",
+  "हार्ट अटैक", "सांप ने काट", "साँप ने काट", "सांप काट", "साँप काट",
   "वाचवा", "मदत करा", "रक्त", "बेशुद्ध", "श्वास घेत", "हृदयविकार", "बुडत", "अपघात", "चेंगराचेंगरी", "जखमी",
+  // Marathi endings of आग (आगीत, आगीचा) and past tense of drowning (बुडाला, बुडाली).
+  // साप alone would also match सापडत/सापडला ("found"), so only as a phrase.
+  "आगी", "बुडा", "साप चाव", "सर्पदंश", "हार्ट अटॅक",
 ];
 
-function hasEmergency(q: string): boolean {
+function hasEmergency(raw: string): boolean {
+  // Phones type ’ for ' ("can’t breathe").
+  const q = raw.replace(/[\u2018\u2019\u02bc]/g, "'");
   const tokens = q.split(/[\s,.;:!?()"'।]+/).filter(Boolean);
   return EMERGENCY_WORDS.some((w) => {
     const n = normalizeText(w);

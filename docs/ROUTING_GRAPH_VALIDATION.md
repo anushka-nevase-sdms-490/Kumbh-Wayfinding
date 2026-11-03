@@ -34,7 +34,7 @@ without water data**; `--no-water-check` overrides that, and is not for real use
 |---|---|---|
 | 1 | Street import (`osm_network.build_network`) | Each segment of each way is tested against the river and weir lines. On a mapped bridge (or an approved crossing) the way is kept and its lanes are marked `passage_kind = "bridge"`. Otherwise **only the part over the water** is cut out; the rest of the way, such as the walk along the bank, stays usable. |
 | 2 | Place links (`attach_places`) | The straight link from a place to its street must not cross a water line or pass through a water area (the first 10 m at the place's end are ignored, for ghats on the water's edge). If the nearest street is across the water, the next one on the same bank within 60 m is used; if none, the place is not joined and gets no route. |
-| 3 | Pack builder (`river_guard`, every pack) | Any lane whose drawn line crosses a river or weir is left out of the phones' data, unless it is a `bridge` lane or a walk a volunteer actually recorded (shown as "review"). This catches lanes that did not come through the import, such as a straight volunteer link. |
+| 3 | Pack builder (`river_guard`, every pack) | Any lane whose drawn line (end places included) crosses a river or weir is left out of the phones' data, unless it is a `bridge` lane **from the OSM import**, or a recorded volunteer walk that an admin approved (trust level `remotely_reviewed` / `officially_verified`; a new walk across water takes the approval back; a straight line nobody walked is never approved). Lanes people added are also checked against water areas (first and last 10 m ignored). A walk a volunteer recorded across the water is also left out and listed for review until an admin approves it (since 2026-11-03: a GPS gap on a bridge draws a straight jump over the river). A "bridge" label typed by a person is not enough, and volunteers cannot set it. This catches lanes that did not come through the import, such as a straight volunteer link. |
 
 ### Approved crossings (manual review)
 
@@ -104,7 +104,7 @@ River/weir crossings: 30 on bridges, 0 unsafe (left out of the pack), 0 recorded
 Connected parts (largest first): [1903, 8, 6, 6, 6, 5, 5, 4, 4, 3]
 Places with no lane: 44; in a small separate part: 1
 Duplicate lanes: 0; place links over 60 m: 0
-OK: no lane in the pack crosses a river or weir except on a bridge or a recorded walk
+OK: no lane in the pack crosses water except on an approved bridge
 ```
 
 The 44 places with no lane are the city-wide places outside the pilot zone.

@@ -30,6 +30,7 @@ Stop with **Ctrl+C**.
 
 | Topic | File |
 |---|---|
+| **Start here: whole project explained (architecture, workflows, tools)** | [docs/PROJECT_DEEP_DIVE.md](docs/PROJECT_DEEP_DIVE.md) |
 | **The 8 phases: done and remaining** | [docs/Setu_Development_Phases.pdf](docs/Setu_Development_Phases.pdf) (one page) · [docs/REMAINING_WORK_ROADMAP.md](docs/REMAINING_WORK_ROADMAP.md) |
 | Audit against the new goals | [docs/PROJECT_IMPLEMENTATION_AUDIT.md](docs/PROJECT_IMPLEMENTATION_AUDIT.md) · [docs/REQUIREMENT_TRACEABILITY_MATRIX.md](docs/REQUIREMENT_TRACEABILITY_MATRIX.md) |
 | QR boards, facility status, search | [docs/QR_BOARDS_AND_FACILITY_STATUS.md](docs/QR_BOARDS_AND_FACILITY_STATUS.md) |
@@ -41,6 +42,7 @@ Stop with **Ctrl+C**.
 | What is known not to work yet | [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) |
 | Ready to deploy? What is missing | [docs/DEPLOYMENT_READINESS.md](docs/DEPLOYMENT_READINESS.md) · [deploy/README.md](deploy/README.md) |
 | Tests, results, what is not tested | [docs/TESTING_AND_QA.md](docs/TESTING_AND_QA.md) |
+| **Code review and bug fixes (3 Nov 2026)** · test matrix | [docs/CODE_REVIEW_AND_BUG_FIX_REPORT.md](docs/CODE_REVIEW_AND_BUG_FIX_REPORT.md) · [docs/TEST_EXECUTION_REPORT.md](docs/TEST_EXECUTION_REPORT.md) |
 | Security and privacy | [docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md) |
 | Offline behaviour | [docs/OFFLINE_ARCHITECTURE.md](docs/OFFLINE_ARCHITECTURE.md) |
 | Map data from OpenStreetMap, trust levels | [docs/NASHIK_GEO_DATA_PIPELINE.md](docs/NASHIK_GEO_DATA_PIPELINE.md) |

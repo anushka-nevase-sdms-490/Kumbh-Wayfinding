@@ -1,14 +1,28 @@
+import json
+import math
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel as _PydanticModel
+from pydantic import ConfigDict, Field, field_validator
+
+
+class BaseModel(_PydanticModel):
+    """Every schema refuses NaN and Infinity: one NaN coordinate would make the
+    published pack unreadable (JSON has no NaN) and passes range checks."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+
+# Lane kinds a volunteer may set; "bridge" / "connector" come only from the OSM import.
+VOLUNTEER_PASSAGE_KINDS = {"corridor", "passage", "door", "glass_door", "steps", "wall", "glass_wall"}
 
 
 class QrNodeCreate(BaseModel):
     code: str = Field(..., min_length=2, max_length=32)
     name: str = Field(..., max_length=128)
-    lat: float
-    lon: float
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
     node_type: str = Field("junction", max_length=32)
     icon: Optional[str] = Field(None, max_length=32)
     description: Optional[str] = Field(None, max_length=1000)
@@ -19,6 +33,9 @@ class QrNodeCreate(BaseModel):
 
 class QrNodeOut(QrNodeCreate):
     id: int
+    # Stored rows are read as they are: the input ranges apply to what comes in.
+    lat: float
+    lon: float
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # Trust level (app/verification.py) — set by the server only.
@@ -42,7 +59,7 @@ class QrNodeOut(QrNodeCreate):
 class EdgeCreate(BaseModel):
     from_code: str = Field(..., min_length=1, max_length=32)
     to_code: str = Field(..., min_length=1, max_length=32)
-    distance_m: float
+    distance_m: float = Field(..., ge=0, le=100000)
     surface: str = Field("paved", max_length=32)
     walkable: bool = True
     bidirectional: bool = True
@@ -52,14 +69,44 @@ class EdgeCreate(BaseModel):
     door_state: str = Field("none", max_length=16)  # none | open | closed | unknown
     blocked: bool = False
     obstacle_note: Optional[str] = Field(None, max_length=64)
-    clearance_m: Optional[float] = None
-    cost_mult: float = 1.0
+    clearance_m: Optional[float] = Field(None, ge=0, le=100)
+    cost_mult: float = Field(1.0, ge=1, le=100)
     verified: bool = False
     path_json: Optional[str] = Field(None, max_length=500_000)
+
+    @field_validator("path_json")
+    @classmethod
+    def path_ok(cls, v: Optional[str]) -> Optional[str]:
+        # One malformed path would break building the pack for every phone.
+        if v is None:
+            return v
+        try:
+            pts = json.loads(v)
+        except ValueError:
+            raise ValueError("path_json must be a JSON list of points") from None
+        if not isinstance(pts, list) or not all(
+            isinstance(p, dict)
+            and all(isinstance(p.get(k), (int, float)) and math.isfinite(p[k]) for k in ("lat", "lon"))
+            for p in pts
+        ):
+            raise ValueError("path_json must be a JSON list of {lat, lon} points")
+        return v
 
 
 class EdgeOut(EdgeCreate):
     id: int
+    # Stored rows are read as they are (an old row outside the input limits
+    # must not break the pack for everyone; a damaged path is drawn straight).
+    distance_m: float
+    clearance_m: Optional[float] = None
+    cost_mult: float = 1.0
+    path_json: Optional[str] = None
+
+    @field_validator("path_json")
+    @classmethod
+    def path_ok(cls, v: Optional[str]) -> Optional[str]:
+        return v
+
     # volunteer | osm (map road nobody has walked yet) — set by the server only.
     source: str = "volunteer"
     name: Optional[str] = None
@@ -113,7 +160,7 @@ class VolunteerRegisterRequest(BaseModel):
     connect_to_code: Optional[str] = Field(None, min_length=2, max_length=32)
     # Compass heading while standing at the NEW board, pointing along the
     # walkable path toward the previous board (around desks/glass).
-    path_heading_deg: Optional[float] = None
+    path_heading_deg: Optional[float] = Field(None, ge=-360, le=720)
     # Sent from the development simulation (positions not from a phone on
     # site): saved as unverified in development, refused in production.
     simulated: bool = False
@@ -164,10 +211,22 @@ class VolunteerEdgeStatusRequest(BaseModel):
     door_state: Optional[str] = Field(None, max_length=16)  # none | open | closed | unknown
     passage_kind: Optional[str] = Field(None, max_length=32)
     obstacle_note: Optional[str] = Field(None, max_length=64)
-    clearance_m: Optional[float] = None
+    clearance_m: Optional[float] = Field(None, ge=0, le=100)
     walkable: Optional[bool] = None
     # With blocked=true: reopen by itself after this many hours (null: until reopened).
     hours: Optional[float] = Field(None, gt=0, le=72)
+
+    @field_validator("passage_kind")
+    @classmethod
+    def kind_ok(cls, v: Optional[str]) -> Optional[str]:
+        # "bridge" and "connector" come only from the OSM import: a bridge
+        # label must never be a way past the river check (river_guard.py).
+        if v is None:
+            return v
+        v = v.strip().lower()
+        if v not in VOLUNTEER_PASSAGE_KINDS:
+            raise ValueError(f"passage_kind must be one of: {', '.join(sorted(VOLUNTEER_PASSAGE_KINDS))}")
+        return v
 
     @field_validator("door_state")
     @classmethod
@@ -190,9 +249,9 @@ class VolunteerRegisterResponse(BaseModel):
 
 
 class PathWaypoint(BaseModel):
-    lat: float
-    lon: float
-    heading_deg: Optional[float] = None
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    heading_deg: Optional[float] = Field(None, ge=-360, le=720)
     t_ms: Optional[int] = None
 
 
@@ -363,6 +422,8 @@ class SosCreate(BaseModel):
     place_code: Optional[str] = Field(None, max_length=32)
     lang: Optional[str] = Field(None, pattern=r"^(en|hi|mr)$")
     device: Optional[str] = Field(None, min_length=8, max_length=64)
+    # When the visitor pressed "Send", by the phone's clock (may be wrong).
+    created_at: Optional[datetime] = None
 
 
 class SosAck(BaseModel):

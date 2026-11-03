@@ -101,6 +101,9 @@ def require_admin(vol: Volunteer = Depends(require_volunteer)) -> Volunteer:
 # Failed sign-ins per network address in IP_WINDOW before refusing (many
 # volunteers may share a carrier address, so this is well above normal use).
 MAX_FAILED_PER_IP = 30
+# The same answer for an unknown number, a wrong PIN and a locked account: a
+# different answer for "locked" told anyone which numbers are staff accounts.
+LOGIN_FAILED = "Wrong phone number or PIN. After 5 wrong PINs, sign-in pauses for 15 minutes."
 IP_WINDOW = timedelta(minutes=15)
 
 
@@ -128,7 +131,7 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     if vol is None or not vol.active:
         verify_pin(body.pin, _DUMMY_HASH)  # same time as a real check
         _failed(db, ip_hash)
-        raise HTTPException(401, "Wrong phone number or PIN")
+        raise HTTPException(401, LOGIN_FAILED)
 
     # Take an attempt slot *before* the slow PIN check, in one atomic UPDATE:
     # guesses sent in parallel cannot all slip past the limit.
@@ -149,15 +152,15 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
             # Every slot is taken (guesses in flight): lock now.
             _lock(db, vol.id, now)
             db.refresh(vol)
-        minutes = max(1, round((vol.locked_until - now).total_seconds() / 60))
+        verify_pin(body.pin, _DUMMY_HASH)  # same time as a real check
         _failed(db, ip_hash)
-        raise HTTPException(423, f"Too many wrong PINs — try again in {minutes} min")
+        raise HTTPException(401, LOGIN_FAILED)
 
     if not verify_pin(body.pin, vol.pin_hash):
         if slot >= MAX_FAILED_LOGINS:
             _lock(db, vol.id, now)
         _failed(db, ip_hash)
-        raise HTTPException(401, "Wrong phone number or PIN")
+        raise HTTPException(401, LOGIN_FAILED)
 
     db.execute(
         update(Volunteer).where(Volunteer.id == vol.id).values(failed_logins=0, locked_until=None)

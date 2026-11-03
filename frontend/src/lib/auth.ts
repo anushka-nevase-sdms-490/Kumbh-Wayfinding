@@ -65,7 +65,9 @@ export async function login(apiBase: string, phone: string, pin: string): Promis
     });
     const data = await res.json().catch(() => null);
     if (!res.ok) {
-      const detail = typeof data?.detail === "string" ? data.detail : null;
+      // A wrong number or PIN (or a paused account) is shown in the volunteer's
+      // language; other refusals (e.g. too many tries from this network) as sent.
+      const detail = res.status !== 401 && typeof data?.detail === "string" ? data.detail : null;
       return { ok: false, message: detail, offline: false };
     }
     // The server sends UTC without a zone.

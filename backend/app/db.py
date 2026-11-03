@@ -214,6 +214,9 @@ class SosAlert(Base):
     device_hash = Column(String(64), nullable=True, index=True)
     ip_hash = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    # When the visitor pressed "Send" (the phone's clock, UTC): an alert made
+    # offline can arrive hours later, with a position that is just as old.
+    asked_at = Column(DateTime, nullable=True)
     # received | acknowledged | resolved | expired (open 48 h with nobody resolving it)
     status = Column(String(16), nullable=False, default="received")
     # Many alerts from the same network address within an hour: accepted (never
@@ -360,7 +363,7 @@ def init_db():
 # tables but never alters existing ones (SQLite or Postgres).
 _ADDED_COLUMNS = {
     "block_reports": {"device_hash": "VARCHAR(64)"},
-    "sos_alerts": {"flood_suspect": "BOOLEAN DEFAULT FALSE"},
+    "sos_alerts": {"flood_suspect": "BOOLEAN DEFAULT FALSE", "asked_at": "TIMESTAMP"},
     "qr_nodes": {
         "local_name": "VARCHAR(128)",
         "gps_accuracy_m": "FLOAT",

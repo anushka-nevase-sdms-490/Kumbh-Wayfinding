@@ -38,13 +38,18 @@ export function VisitorReports({ apiBase, onSaved }: Props) {
       // The volunteer's position stays on the phone (never in a URL, which
       // servers log): distances are worked out here.
       const res = await authFetch(`${apiBase}/api/reports`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        // 401 opens the sign-in sheet (authFetch); anything else is said here.
+        if (res.status !== 401) setErr(t("vol.reports.loadFailed"));
+        return;
+      }
       const list = ((await res.json()) as Report[]).map((r) => ({
         ...r,
         distance_m: pos ? haversineM(pos.coords.latitude, pos.coords.longitude, r.lat, r.lon) : null,
       }));
       if (pos) list.sort((a, b) => (a.distance_m ?? 0) - (b.distance_m ?? 0));
       setReports(list);
+      setErr(null);
     } catch {
       setErr(t("vol.reports.loadFailed"));
     }
@@ -86,7 +91,9 @@ export function VisitorReports({ apiBase, onSaved }: Props) {
     }
   }
 
-  if (reports === null || reports.length === 0) return null;
+  // Before the first list arrives, a load error is the only thing worth showing.
+  if (reports === null) return err ? <p className="gps-status err">{err}</p> : null;
+  if (reports.length === 0) return null;
   return (
     <div className="visitor-reports">
       <p className="section-label">{t("vol.reports.title", { n: reports.length })}</p>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "../i18n/context";
-import { createSos, httpTransport, idbSos, SOS_EVENT, type SosItem, type SosKind } from "../lib/sos";
+import { createSos, httpTransport, idbSos, presetOf, SOS_EVENT, type SosItem, type SosKind } from "../lib/sos";
 import { haversineM, isRegisteredLocation, type QrNode } from "../lib/types";
 import { PlaceBadges } from "./PlaceBadges";
 
@@ -30,6 +30,8 @@ export function SosScreen({ apiBase, places, position, start, device, onBack, on
   const [kind, setKind] = useState<SosKind | null>(null);
   const [note, setNote] = useState(initialNote ?? "");
   const [busy, setBusy] = useState(false);
+  // Only when the phone could not keep the alert (it is then missing from "Your alerts").
+  const [notice, setNotice] = useState<string | null>(null);
   const [items, setItems] = useState<SosItem[]>([]);
 
   useEffect(() => {
@@ -46,8 +48,9 @@ export function SosScreen({ apiBase, places, position, start, device, onBack, on
   async function send() {
     if (!kind) return;
     setBusy(true);
+    setNotice(null);
     try {
-      await createSos(
+      const sent = await createSos(
         {
           kind,
           note: note || null,
@@ -61,8 +64,21 @@ export function SosScreen({ apiBase, places, position, start, device, onBack, on
         idbSos,
         httpTransport(apiBase)
       );
-      setKind(null);
-      setNote("");
+      if (!sent.savedOnPhone) {
+        setNotice(
+          sent.state === "pending"
+            ? t("sos.notSent")
+            : sent.state === "refused"
+              ? t("sos.state.refused", { why: sent.error ?? "" })
+              : t("sos.sentNotSaved")
+        );
+      }
+      if (sent.savedOnPhone || sent.state !== "pending") {
+        setKind(null);
+        setNote("");
+      }
+    } catch {
+      setNotice(t("sos.notSent"));
     } finally {
       setBusy(false);
     }
@@ -144,6 +160,11 @@ export function SosScreen({ apiBase, places, position, start, device, onBack, on
       <button type="button" className="btn danger-solid block" disabled={!kind || busy} onClick={() => void send()}>
         {busy ? t("sos.sending") : t("sos.send")}
       </button>
+      {notice && (
+        <p className="sos-item state-refused" role="alert">
+          {notice}
+        </p>
+      )}
 
       {items.length > 0 && (
         <>
@@ -167,7 +188,13 @@ export function SosScreen({ apiBase, places, position, start, device, onBack, on
                             ? t("sos.state.expired")
                             : t("sos.state.refused", { why: i.error ?? "" })}
                 </p>
-                {i.ackMessage && <p className="sos-msg">{t("sos.opMessage", { msg: i.ackMessage })}</p>}
+                {i.ackMessage && (
+                  <p className="sos-msg">
+                    {t("sos.opMessage", {
+                      msg: presetOf(i.ackMessage) ? t(`sos.preset.${presetOf(i.ackMessage)!}`) : i.ackMessage,
+                    })}
+                  </p>
+                )}
                 {(i.state === "pending" || i.state === "sent") && <small>{t("sos.urgent")}</small>}
                 {(i.state === "resolved" || i.state === "expired" || i.state === "refused") && (
                   <button type="button" className="btn soft" onClick={() => void idbSos.remove(i.clientId).then(() => setItems((l) => l.filter((x) => x.clientId !== i.clientId)))}>

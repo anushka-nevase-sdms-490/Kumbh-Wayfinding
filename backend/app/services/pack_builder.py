@@ -53,6 +53,8 @@ def _public_path(raw: str | None) -> str | None:
         points = json.loads(raw)
     except ValueError:
         return None
+    if not isinstance(points, list):
+        return None  # damaged: the lane is drawn straight rather than breaking the pack
     if all(isinstance(p, dict) and set(p) <= {"lat", "lon"} for p in points):
         return raw  # already positions only (OSM lanes): keep the same text
     return json.dumps(
@@ -194,13 +196,14 @@ def _collect(db: Session) -> Tuple[List[dict], List[dict]]:
     # Never ship a lane whose end place is missing — clients route on it.
     codes = {n["code"] for n in node_dicts}
     edge_dicts = [e for e in edge_dicts if e["from_code"] in codes and e["to_code"] in codes]
-    # Never ship a lane drawn through the river unless it is a bridge or a real walk.
+    # Never ship a lane drawn through the river unless it is an approved bridge
+    # (river_guard.crossing_problem): unapproved lanes and walks to review stay out.
     from .river_guard import crossing_problem, load_water_index
 
     water = load_water_index()
     if water is not None:
         by_code = {n["code"]: n for n in node_dicts}
-        edge_dicts = [e for e in edge_dicts if crossing_problem(e, by_code, water) != "error"]
+        edge_dicts = [e for e in edge_dicts if crossing_problem(e, by_code, water) is None]
     elif edge_dicts and not _warned["no_water"]:
         _warned["no_water"] = True
         logger.warning(

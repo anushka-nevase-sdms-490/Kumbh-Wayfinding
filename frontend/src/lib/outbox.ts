@@ -128,6 +128,14 @@ function detailOf(data: unknown, status: number): string {
   return `Refused by the server (error ${status})`;
 }
 
+/**
+ * Every Setu answer is a JSON object. Anything else (a Wi-Fi login page, a
+ * proxy's error page) did not come from the server: keep the change.
+ */
+function fromSetu(data: unknown): boolean {
+  return !!data && typeof data === "object";
+}
+
 /** A 200 that still means "not saved" (register: the place already exists). */
 function notSaved(data: unknown): boolean {
   return (data as { success?: unknown } | null)?.success === false;
@@ -165,8 +173,10 @@ export async function sendOrQueue(
       const res = await send(path, body, id);
       if (!retryLater(res)) {
         const data = await res.json().catch(() => null);
-        if (!res.ok || notSaved(data)) return { kind: "refused", message: detailOf(data, res.status), data };
-        return { kind: "sent", data };
+        if (fromSetu(data)) {
+          if (!res.ok || notSaved(data)) return { kind: "refused", message: detailOf(data, res.status), data };
+          return { kind: "sent", data };
+        }
       }
     } catch {
       /* no connection: keep it */
@@ -221,14 +231,18 @@ async function runFlush(send: Sender, store: OutboxStore, volunteerId: number | 
     try {
       res = await send(item.path, item.body, item.id);
     } catch {
-      await store.put({ ...item, attempts: item.attempts + 1 });
+      await keepWaiting(store, item);
       break; // offline: the rest waits too, in order
     }
     if (retryLater(res)) {
-      await store.put({ ...item, attempts: item.attempts + 1 });
+      await keepWaiting(store, item);
       break;
     }
     const data = await res.json().catch(() => null);
+    if (!fromSetu(data)) {
+      await keepWaiting(store, item);
+      break;
+    }
     const ok = res.ok && !notSaved(data);
     // Changes that were waiting for this one: fill in its result, or refuse them too.
     const code = (data as { node?: { code?: unknown } } | null)?.node?.code;
@@ -264,6 +278,11 @@ async function runFlush(send: Sender, store: OutboxStore, volunteerId: number | 
   out.waiting = (await store.list()).filter((x) => x.status === "waiting").length;
   changed();
   return out;
+}
+
+/** Count the attempt, unless the volunteer removed the change while it was being sent. */
+async function keepWaiting(store: OutboxStore, item: OutboxItem): Promise<void> {
+  if ((await store.list()).some((x) => x.id === item.id)) await store.put({ ...item, attempts: item.attempts + 1 });
 }
 
 /** The volunteer read a refusal (or gave up on a waiting change). */

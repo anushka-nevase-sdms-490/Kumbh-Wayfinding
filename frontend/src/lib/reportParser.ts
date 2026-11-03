@@ -59,7 +59,8 @@ function hasWord(tokens: string[], words: string[]): string | null {
 }
 
 export function parseReport(text: string, places: QrNode[]): ParsedReport {
-  const raw = text.trim();
+  // Devanagari digits (८ साल) read like 8.
+  const raw = text.trim().replace(/[०-९]/g, (d) => String(d.charCodeAt(0) - 0x0966));
   const out: Suggestion[] = [];
   if (!raw) return { suggestions: [], questions: [] };
   const tokens = tokensOf(raw);
@@ -105,15 +106,20 @@ export function parseReport(text: string, places: QrNode[]): ParsedReport {
   // Time of day as words, never turned into a date.
   const clock = /\b(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)/i.exec(raw);
   const part = tokens.map((tk) => DAYPART[tk]).find(Boolean);
-  const num = /(?:at|around|about|बजे|वाजता|वाजता)\s*(\d{1,2})(?:[:.](\d{2}))?|(\d{1,2})(?:[:.](\d{2}))?\s*(?:बजे|वाजता|वाजता)/i.exec(raw);
+  // "about 8" is a time only if it is not an age ("about 8 years old").
+  const num = /(?:at|around|about|बजे|वाजता|वाजता)\s*(\d{1,2})(?:[:.](\d{2}))?(?![:.]?\d|\s*-?\s*(?:years?|yrs?|year-old|y\/o|साल|वर्ष))|(\d{1,2})(?:[:.](\d{2}))?\s*(?:बजे|वाजता|वाजता)/i.exec(raw);
   let when: string | null = null;
   if (clock) when = `around ${clock[1]}${clock[2] ? `:${clock[2]}` : ""} ${clock[3].replace(/\./g, "").toLowerCase()}`;
   else if (num) when = `around ${num[1] ?? num[3]}${(num[2] ?? num[4]) ? `:${num[2] ?? num[4]}` : ""}${part ? ` (${part})` : ""}`;
   else if (part) when = `in the ${part}`;
   if (when) out.push({ field: "last_seen_note", value: `Last seen ${when}`, label: `Last seen ${when}`, from: (clock ?? num)?.[0] ?? part ?? "" });
 
-  // Name only after an explicit "name is / named / नाम / नाव".
-  const name = /\b(?:name is|named|called)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/.exec(raw) ?? /(?:नाम|नाव)\s+(?:है\s+|आहे\s+)?([^\s,।.]+)/.exec(raw);
+  // Name only after an explicit "name is / named / नाम / <his> नाव" — नाव alone
+  // also means "boat" in Marathi, so it needs चं/चे/ची/चा before it or a colon after it.
+  const name =
+    /\b(?:name is|named|called)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/.exec(raw) ??
+    /नाम\s+(?:है\s+)?([^\s,।.]+)/.exec(raw) ??
+    /(?:(?:चं|चे|ची|चा)\s+नाव\s+(?:आहे\s+)?|नाव\s*[:：]\s*)([^\s,।.]+)/.exec(raw);
   if (name) out.push({ field: "person_name", value: name[1], label: `Name ${name[1]}`, from: name[0] });
 
   const phone = /(?:\+?91[\s-]?)?([6-9]\d{4}[\s-]?\d{5})\b/.exec(raw);

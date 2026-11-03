@@ -218,6 +218,11 @@ def register_location(
         )
         if takeover is None:
             raise HTTPException(400, why)
+    if not takeover and body.code and body.code.strip().upper().startswith("OSM-"):
+        # OSM-… codes belong to the map import (OSM-J… would even hide the
+        # place from admins as a "map junction"). Map places are confirmed
+        # with confirm_code instead.
+        raise HTTPException(400, "Codes starting with OSM- are reserved for map places")
     code = (takeover.code if takeover else (body.code or _next_location_code(db))).strip().upper()
 
     # Resolve the lane's other end before saving anything, so a bad code
@@ -399,7 +404,9 @@ def set_edge_status(
                 r.status, r.resolved_by, r.resolved_at = "confirmed", vol.id, datetime.utcnow()
     if body.door_state is not None:
         edge.door_state = body.door_state
-    if body.passage_kind is not None:
+    if body.passage_kind is not None and not (edge.source == "osm" and edge.passage_kind in ("bridge", "connector")):
+        # A map bridge or place link keeps its kind (the obstacle screen always
+        # sends one): closing it is `blocked`, so reopening brings the bridge back.
         edge.passage_kind = body.passage_kind.strip().lower()
     if body.obstacle_note is not None:
         edge.obstacle_note = body.obstacle_note.strip() or None
@@ -444,6 +451,17 @@ def set_edge_status(
         "clearance_m": edge.clearance_m,
         "cost_mult": edge.cost_mult,
     }
+
+
+def _walk_crosses_water(edge: Edge, na: QrNode, nb: QrNode) -> bool:
+    from ..services.river_guard import load_water_index, river_crossings
+
+    water = load_water_index()
+    if water is None or water.empty:
+        return False
+    nodes = {n.code: {"lat": n.lat, "lon": n.lon} for n in (na, nb)}
+    lane = {"from_code": edge.from_code, "to_code": edge.to_code, "path_json": edge.path_json, "source": edge.source}
+    return bool(river_crossings(lane, nodes, water))
 
 
 @router.post("/record-path")
@@ -519,17 +537,14 @@ def record_verified_path(
         edge.from_code = a
         edge.to_code = b
         edge.distance_m = round(path_m, 1)
-        # An admin's rejection stands: the walk is kept for review below, but
-        # the lane is not reopened by a volunteer.
-        if edge.verification != REJECTED:
-            edge.walkable = True
-            edge.blocked = False
-            if edge.door_state == "closed":
-                edge.door_state = "open"
+        # A walk never reopens a closed lane: it may have been recorded before
+        # the closure and sent later from the offline queue. Reopening is its
+        # own decision (edge-status), and an admin's rejection stands.
 
     edge.heading_ab = heading_ab
     edge.heading_ba = heading_ba
     rejected = edge.verification == REJECTED
+    still_closed = bool(edge.blocked or edge.door_state == "closed" or edge.walkable is False)
     edge.verified_at = datetime.utcnow()
     edge.updated_by = vol.id
     if body.simulated:
@@ -543,13 +558,18 @@ def record_verified_path(
         if edge.verification not in (OFFICIALLY_VERIFIED, REJECTED):
             edge.verification = VOLUNTEER_VERIFIED  # walked with GPS
     edge.path_json = json.dumps(payload)
+    if not rejected and edge.verification == OFFICIALLY_VERIFIED and _walk_crosses_water(edge, na, nb):
+        # An admin approved an earlier shape; this walk crosses water (a GPS
+        # gap on a bridge looks like a jump over the river): review it again.
+        edge.verification = VOLUNTEER_VERIFIED
     if not rejected:
         edge.obstacle_note = None
     db.flush()
     audit(db, vol, "lane.walk", f"lane:{edge.id}",
           f"Walked {a} → {b} ({round(path_m)} m, {len(payload)} GPS points)"
           + (" — simulated" if body.simulated else "")
-          + (" — lane is rejected, walk kept for review" if rejected else ""))
+          + (" — lane is rejected, walk kept for review" if rejected else "")
+          + (" — lane stays closed" if still_closed and not rejected else ""))
 
     db.commit()
     db.refresh(edge)
@@ -563,8 +583,11 @@ def record_verified_path(
         "message": (
             "This lane was rejected by an admin — your walk is saved for review"
             if rejected
+            else "Walk recorded. The lane is still closed — reopen it separately if it is open now"
+            if still_closed
             else "Verified walkable path recorded"
         ),
+        "still_closed": still_closed,
         "from_code": edge.from_code,
         "to_code": edge.to_code,
         "distance_m": edge.distance_m,

@@ -18,6 +18,8 @@ import {
   GOOD_FIX_M,
   WEAK_FIX_M,
   placesByDistance,
+  REROUTE_MAX_M,
+  rerouteStart,
   suggestStart,
   type PlaceDistance,
 } from "./lib/nearest";
@@ -638,8 +640,9 @@ export default function App() {
     setStart(nearest.node);
   }
 
+  // Lanes the visitor reported blocked stay avoided for this visit, also for a
+  // new destination ("Clear temporary blocks" on the no-route screen lifts them).
   useEffect(() => {
-    setSessionBlocked(new Set());
     setRerouteMsg(null);
   }, [dest?.code]);
 
@@ -648,6 +651,12 @@ export default function App() {
     setGpsArrived(false);
     setGpsMsg(null);
   }, [dest?.code, start?.code, step]);
+
+  // An "unknown board code" warning belongs to the code just typed: a start
+  // picked another way (list, GPS) clears it.
+  useEffect(() => {
+    setBoardMsg(null);
+  }, [start?.code]);
 
   // Keyed on the codes: a refreshed pack gives new place objects for the same trip.
   const startCode = start?.code;
@@ -816,16 +825,20 @@ export default function App() {
     offRouteFixesRef.current += 1;
     if (offRouteFixesRef.current < OFF_ROUTE_FIXES) return;
     offRouteFixesRef.current = 0;
-    // Map junctions count too: the nearest point on any road is the best restart.
-    const from = placesByDistance(pack.nodes, live.pos)
-      .slice(0, REROUTE_CANDIDATES)
-      .find(
-        (p) =>
-          // Never the destination itself: that would count as "arrived".
-          p.node.code !== dest.code &&
-          findRoute(pack, p.node.code, dest.code, routeOptions).valid
-      );
-    if (!from) return;
+    // Only a nearby point (map junctions count) that can still reach the
+    // destination; never the destination itself (that would count as "arrived").
+    const from = rerouteStart(
+      pack.nodes,
+      live.pos,
+      dest.code,
+      (code) => findRoute(pack, code, dest.code, routeOptions).valid,
+      REROUTE_MAX_M,
+      REROUTE_CANDIDATES
+    );
+    if (!from) {
+      setRerouteMsg(t("rr.headBackLine", { dist: dist(progress.offRouteM) }));
+      return;
+    }
     const named = isRegisteredLocation(from.node) && from.node.name.trim().length > 0;
     if (from.node.code === start?.code) {
       setRerouteMsg(
@@ -1041,8 +1054,8 @@ export default function App() {
                       !
                     </span>
                     <span className="action-text">
-                      <strong>SOS alerts</strong>
-                      <small>Visitors asking for help — acknowledge and resolve</small>
+                      <strong>{t("vol.home.sos")}</strong>
+                      <small>{t("vol.home.sosHint")}</small>
                     </span>
                     <ChevronIcon size={20} className="action-chevron" />
                   </button>
@@ -1058,8 +1071,8 @@ export default function App() {
                       ?
                     </span>
                     <span className="action-text">
-                      <strong>Lost persons</strong>
-                      <small>Cases for authorized operators</small>
+                      <strong>{t("vol.home.cases")}</strong>
+                      <small>{t("vol.home.casesHint")}</small>
                     </span>
                     <ChevronIcon size={20} className="action-chevron" />
                   </button>
@@ -1531,7 +1544,7 @@ export default function App() {
           ) : (
             <>
             {destinationAreas.length > 1 && (
-              <div className="filter-row" role="group" aria-label="Area">
+              <div className="filter-row" role="group" aria-label={t("dest.filterArea")}>
                 {(["all", ...destinationAreas] as const).map((a) => (
                   <button
                     key={a}
@@ -1545,7 +1558,7 @@ export default function App() {
               </div>
             )}
             {destinationCategories.length > 1 && (
-              <div className="filter-row" role="group" aria-label="Category">
+              <div className="filter-row" role="group" aria-label={t("dest.filterCategory")}>
                 {[{ id: "all" }, ...destinationCategories].map(
                   (c) => (
                     <button
@@ -1700,7 +1713,10 @@ export default function App() {
           />
 
           <div className="guide-card">
-            <p className="guide-now">{guideNow}</p>
+            {/* Read out by screen readers when the next instruction changes. */}
+            <p className="guide-now" aria-live="polite" aria-atomic="true">
+              {guideNow}
+            </p>
             <p className="guide-next">
               {t("guide.next")} <strong>{placeLabel(nextNamed ?? dest)}</strong>
               {toNextM + laterToNamedM > 0 && <> · {dist(toNextM + laterToNamedM)}</>}

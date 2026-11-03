@@ -6,7 +6,7 @@ Truthful states on the phone: Pending (saved on the phone) → Sent (this
 server stored it: 201/200 with an id) → Acknowledged (an operator confirmed
 it). Setu does not contact the police or an ambulance.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.exc import IntegrityError
@@ -27,6 +27,8 @@ router = APIRouter(tags=["sos"])
 # hour from one address, alerts are accepted but marked as a possible flood.
 MAX_SOS_PER_DEVICE_HOUR = 5
 FLOOD_MARK_PER_IP_HOUR = 60
+# Open alerts the operator console lists (all of them in practice).
+OPEN_LIST_LIMIT = 5000
 
 
 def _public(a: SosAlert) -> dict:
@@ -58,7 +60,7 @@ def create_sos(body: SosCreate, request: Request, response: Response, db: Sessio
     alert = SosAlert(
         client_id=body.client_id, kind=body.kind, note=(body.note or "").strip() or None,
         lat=body.lat, lon=body.lon, accuracy_m=body.accuracy_m, place_code=body.place_code,
-        lang=body.lang, device_hash=device_hash, ip_hash=ip_hash,
+        lang=body.lang, device_hash=device_hash, ip_hash=ip_hash, asked_at=_asked_at(body.created_at),
         flood_suspect=by_ip >= FLOOD_MARK_PER_IP_HOUR,
     )
     db.add(alert)
@@ -82,9 +84,21 @@ def sos_status(client_id: str, db: Session = Depends(get_db)):
     return _public(alert)
 
 
+def _asked_at(t: datetime | None) -> datetime | None:
+    """The phone's "sent at" time as naive UTC; dropped when the clock is clearly
+    wrong (in the future, or more than 3 days back; such an alert is still
+    accepted, only without this time)."""
+    if t is None:
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone(timezone.utc).replace(tzinfo=None)
+    now = datetime.utcnow()
+    return t if now - timedelta(days=3) <= t <= now + timedelta(minutes=5) else None
+
+
 def _ops_view(a: SosAlert) -> dict:
     return {
-        "id": a.id, "kind": a.kind, "note": a.note, "lat": a.lat, "lon": a.lon,
+        "id": a.id, "kind": a.kind, "note": a.note, "lat": a.lat, "lon": a.lon, "asked_at": a.asked_at,
         "accuracy_m": a.accuracy_m, "place_code": a.place_code, "lang": a.lang,
         "created_at": a.created_at, "status": a.status, "ack_at": a.ack_at,
         "ack_message": a.ack_message, "resolved_at": a.resolved_at, "flood_suspect": a.flood_suspect,
@@ -98,8 +112,11 @@ def list_sos(status: str = "open", db: Session = Depends(get_db), vol: Volunteer
     q = db.query(SosAlert)
     if status == "open":
         q = q.filter(SosAlert.status.in_(("received", "acknowledged")))
-    # Possible-flood alerts after the others (still listed, never dropped); newest first.
-    return [_ops_view(a) for a in q.order_by(SosAlert.flood_suspect, SosAlert.created_at.desc()).limit(200)]
+    # Possible-flood alerts after the others; newest first. Open alerts are
+    # all listed (the limit is only a safety net): a cut-off at 200 let a flood
+    # of fake alerts, or a busy day, push the longest-waiting real ones out.
+    limit = OPEN_LIST_LIMIT if status == "open" else 200
+    return [_ops_view(a) for a in q.order_by(SosAlert.flood_suspect, SosAlert.created_at.desc()).limit(limit)]
 
 
 def _alert(db: Session, alert_id: int) -> SosAlert:

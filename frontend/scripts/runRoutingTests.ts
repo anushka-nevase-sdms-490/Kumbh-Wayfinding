@@ -16,7 +16,7 @@ import {
   evaluateArrival,
   nextNavState,
 } from "../src/lib/navigation";
-import { placesByDistance, suggestStart } from "../src/lib/nearest";
+import { placesByDistance, rerouteStart, suggestStart } from "../src/lib/nearest";
 import { mapRoadParts, routeLine } from "../src/lib/mapData";
 import { ON_ROUTE_M, reachedPlace, routeProgress, offRouteLimitM } from "../src/lib/progress";
 import { INITIAL_GPS_FILTER, filterFix } from "../src/lib/gpsFilter";
@@ -44,7 +44,7 @@ import {
 import { fetchNewerPack } from "../src/lib/packSync";
 import { checkStored, isQuotaError, packChecksum } from "../src/lib/packStore";
 import { normalizeBoardCode, opStatus, resolveBoard, searchPlaces, trustOf } from "../src/lib/placeInfo";
-import { createSos, flushSos, type SosItem, type SosStore, type SosTransport } from "../src/lib/sos";
+import { createSos, flushSos, presetOf, SOS_PRESETS, type SosItem, type SosStore, type SosTransport } from "../src/lib/sos";
 import { ask } from "../src/lib/assistant";
 import { parseReport } from "../src/lib/reportParser";
 import { dataStaleness, GUIDE_RECHECK_MS, routeChangedByData, shouldRecheck } from "../src/lib/packSync";
@@ -798,6 +798,15 @@ function pack(edges: GraphEdge[], nodes: QrNode[] = [START, MID, DEST, CORNER]):
     "T33 'stampede' / 'भगदड़' is an emergency, not safety tips");
   assert(ask("someone is injured", { places, from: at, now }).kind === "emergency", "T33 'injured' alone → emergency");
   assert(ask("आगे घाट कहाँ है", { places, from: at, now }).kind !== "emergency", "T33 'आगे' (ahead) is not 'आग' (fire)");
+  // T37 (audit): common phrasings that were missed.
+  const missed = ["आगीत अडकले", "मुलगा पाण्यात बुडाला", "he can’t breathe", "snakebite near the ghat", "साप चावला",
+    "सांप ने काटा", "हार्ट अटैक आया", "bachao", "aag lagi hai", "he was stabbed"];
+  const missedKinds = missed.map((q) => [q, ask(q, { places, from: at, now }).kind]);
+  assert(missedKinds.every(([, k]) => k === "emergency"), `T37 more emergency phrasings in en/hi/mr are recognised (${JSON.stringify(missedKinds.filter(([, k]) => k !== "emergency"))})`);
+  const fine = ["घाट सापडत नाही", "aage kaise jaayein", "आगे मंदिर है", "where is the help desk",
+    "Is it dangerous to bathe at Ramkund at night?", "where can I see snake charmers", "धोका आहे का", "क्या यहाँ खतरा है"];
+  const fineKinds = fine.map((q) => [q, ask(q, { places, from: at, now }).kind]);
+  assert(fineKinds.every(([, k]) => k !== "emergency"), `T37 ordinary questions are not emergencies (${JSON.stringify(fineKinds)})`);
   const em = ask("heart attack", { places, from: at, now });
   assert(em.kind === "emergency" && em.places.length > 0 && em.places.every((h) => h.status.kind !== "closed" && h.node.node_type === "medical"),
     "T33 an emergency also lists the nearest help (never a place reported closed)");
@@ -836,6 +845,12 @@ function pack(edges: GraphEdge[], nodes: QrNode[] = [START, MID, DEST, CORNER]):
   assert(parseReport("", places).suggestions.length === 0, "T34 empty text → no suggestions");
   assert(!parseReport("seen at 3 pm yesterday", places).suggestions.some((s) => /\d{4}-\d{2}/.test(s.value)),
     "T34 a time is kept as words, never turned into a date");
+  const field = (q: string, f: string) => parseReport(q, places).suggestions.find((s) => s.field === f)?.value;
+  assert(field("Boy about 8 years old", "last_seen_note") === undefined && field("Boy about 8 years old", "approx_age") === "8",
+    "T37 'about 8 years old' is an age, not a time");
+  assert(field("मुलगा नाव घाटाजवळ हरवला", "person_name") === undefined && field("त्याचं नाव राहुल आहे", "person_name") === "राहुल",
+    "T37 Marathi नाव ('boat') alone is not a name; 'त्याचं नाव राहुल' is");
+  assert(field("८ साल का लड़का", "approx_age") === "8", "T37 an age in Devanagari digits (८ साल) is read");
 }
 
 // ── T35: stale saved data — the phone warns once it hasn't confirmed the data for 12 h ──
@@ -1212,6 +1227,98 @@ async function sosTests() {
   assert(posts === before && mem.get(a.clientId)!.state === "acknowledged", "T32 offline refresh changes nothing (no false updates)");
 }
 await sosTests();
+
+// ── T36: answers that are not Setu's (Wi-Fi login page, proxy) never count as delivered ──
+async function notSetuTests() {
+  const html = (status: number) =>
+    ({ status, ok: status < 300, json: async () => { throw new SyntaxError("Unexpected token <"); } }) as unknown as Response;
+  const mem = new Map<string, SosItem>();
+  const store: SosStore = {
+    list: async () => [...mem.values()].map((x) => structuredClone(x)),
+    put: async (i) => void mem.set(i.clientId, structuredClone(i)),
+    remove: async (id) => void mem.delete(id),
+  };
+  const fields = { kind: "medical" as const, note: null, lat: 20, lon: 73.79, accuracyM: 9, placeCode: null, lang: "en", device: "d-1" };
+  const portal: SosTransport = { post: async () => html(200), get: async () => html(200) };
+  const a = await createSos(fields, store, portal);
+  assert(a.state === "pending" && a.serverId === undefined, "T36 SOS: a 200 login page is NOT 'sent' — it stays pending and is retried");
+  const blocked: SosTransport = { post: async () => html(403), get: async () => html(403) };
+  const b = await createSos(fields, store, blocked);
+  assert(b.state === "pending", "T36 SOS: a 403 page from the network (not Setu) is not a final refusal");
+
+  let posts = 0;
+  const ok: SosTransport = {
+    post: async () => {
+      posts++;
+      return { status: 201, ok: true, json: async () => ({ id: 7, status: "received", received_at: "2026-10-30T10:00:00" }) } as Response;
+    },
+    get: async () => ({ status: 200, ok: true, json: async () => ({ id: 7, status: "expired" }) }) as Response,
+  };
+  const broken: SosStore = {
+    list: async () => [],
+    put: async () => { throw new DOMException("full", "QuotaExceededError"); },
+    remove: async () => {},
+  };
+  const c = await createSos(fields, broken, ok);
+  assert(posts === 1 && c.state === "sent" && c.savedOnPhone === false,
+    "T36 SOS: phone storage failing does not stop the alert being sent (and the screen is told it was not saved)");
+
+  // An alert sent 30 h ago: the server closes it at 48 h, and the phone still hears about it.
+  mem.clear();
+  const old: SosItem = { ...fields, clientId: "old-alert-0000000001", createdAt: new Date(Date.now() - 30 * 3600e3).toISOString(), state: "sent", attempts: 1, serverId: 7 };
+  mem.set(old.clientId, old);
+  await flushSos(store, ok);
+  assert(mem.get(old.clientId)!.state === "expired", "T36 SOS: an alert older than 24 h still learns that the server expired it");
+
+  // Volunteer outbox: the same login page must not remove a change from the queue.
+  const omem = new Map<string, OutboxItem>();
+  const ostore: OutboxStore = {
+    list: async () => [...omem.values()].sort((x, y) => x.createdAt.localeCompare(y.createdAt)),
+    put: async (i) => void omem.set(i.id, structuredClone(i)),
+    remove: async (id) => void omem.delete(id),
+  };
+  const offline: Sender = async () => { throw new TypeError("Failed to fetch"); };
+  const VOL = 5;
+  const q = await sendOrQueue("/api/volunteer/edge-status", { a: 1 }, { label: "Close lane" }, async () => html(200), ostore, VOL);
+  assert(q.kind === "queued", "T36 outbox: a 200 login page when sending → the change is kept, not 'sent'");
+  const f = await flushOutbox(async () => html(200), ostore, VOL);
+  assert(f.sent === 0 && f.waiting === 1 && omem.size === 1, "T36 outbox: flushing into a login page keeps the change waiting");
+  // The volunteer removes a change while it is being sent and the server says "later": it stays removed.
+  omem.clear();
+  await sendOrQueue("/api/volunteer/edge-status", { a: 2 }, { label: "Close lane" }, offline, ostore, VOL);
+  const slow: Sender = async () => {
+    omem.clear(); // dismissed meanwhile
+    return { ok: false, status: 503, json: async () => ({}), headers: new Headers() } as Response;
+  };
+  await flushOutbox(slow, ostore, VOL);
+  assert(omem.size === 0, "T36 outbox: a change removed while it was being sent does not come back");
+}
+await notSetuTests();
+
+// ── T39: the operator's quick replies are shown in the visitor's language; typed text as typed ──
+assert(presetOf(SOS_PRESETS.coming) === "coming" && presetOf(" Go to the nearest help desk ") === "helpDesk"
+  && presetOf("Wait at gate 3") === null && presetOf(null) === null,
+  "T39 a known quick reply is recognised (and translated on the phone); a typed message is shown as typed");
+for (const k of Object.keys(SOS_PRESETS) as (keyof typeof SOS_PRESETS)[]) {
+  const key = `sos.preset.${k}` as const;
+  assert(en[key] === SOS_PRESETS[k] && !!hi[key] && hi[key] !== en[key] && !!mr[key] && mr[key] !== en[key],
+    `T39 quick reply '${k}' is translated into Hindi and Marathi`);
+}
+
+// ── T38: off the route, the new route starts near the walker — never across the river ──
+{
+  const at = (code: string, lat: number, lon: number, node_type = "landmark") =>
+    ({ code, name: code.startsWith("OSM-J") ? "" : code, lat, lon, node_type }) as QrNode;
+  const walker = { lat: 20.0, lon: 73.8 };
+  // ~45 m east: the junction on the walker's own road; ~80 m west across the river: a ghat.
+  const nodes = [at("OSM-J9", 20.0, 73.80043, "junction"), at("WEST-GHAT", 20.0, 73.79923), at("DEST", 20.01, 73.8)];
+  const r = rerouteStart(nodes, walker, "DEST", () => true);
+  assert(r?.node.code === "OSM-J9", `T38 restart from the nearby road junction, not a named place 80 m away (${r?.node.code})`);
+  const far = rerouteStart([at("WEST-GHAT", 20.0, 73.79923), at("DEST", 20.01, 73.8)], walker, "DEST", () => true);
+  assert(far === null, "T38 nothing within 50 m → no restart (the walker is told to head back to the route)");
+  const dest = rerouteStart([at("DEST", 20.0, 73.8001)], walker, "DEST", () => true);
+  assert(dest === null, "T38 the destination itself is never the restart point");
+}
 
 if (failed) {
   console.error(`\n${failed} test(s) failed`);

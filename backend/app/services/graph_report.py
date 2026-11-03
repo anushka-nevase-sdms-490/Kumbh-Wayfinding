@@ -61,7 +61,7 @@ def validate(db) -> dict:
 
     pack_nodes, pack_edges = _collect(db)
     pack_unsafe = [
-        e["id"] for e in pack_edges if water is not None and crossing_problem(e, by_code, water) == "error"
+        e["id"] for e in pack_edges if water is not None and crossing_problem(e, by_code, water) is not None
     ]
     comps = components({n["code"] for n in pack_nodes}, pack_edges)
     main = comps[0] if comps else set()

@@ -51,6 +51,22 @@ export interface SosTransport {
 }
 
 export const SOS_EVENT = "setu-sos-changed";
+
+/**
+ * The operator's quick replies. They are stored as this English text (older
+ * phones show it as it is); a phone shows a known one in the visitor's language.
+ */
+export const SOS_PRESETS = {
+  coming: "A volunteer is coming to you",
+  helpDesk: "Go to the nearest help desk",
+  stay: "Stay where you are — help is coming",
+} as const;
+export type SosPreset = keyof typeof SOS_PRESETS;
+
+export function presetOf(message: string | null | undefined): SosPreset | null {
+  const hit = (Object.keys(SOS_PRESETS) as SosPreset[]).find((k) => SOS_PRESETS[k] === message?.trim());
+  return hit ?? null;
+}
 const DB_NAME = "setu-sos";
 const STORE = "alerts";
 
@@ -113,6 +129,17 @@ type ServerAlert = {
   detail?: unknown;
 };
 
+/** A real Setu answer about an alert (a Wi-Fi login page or a proxy's 200 is not). */
+function isServerAlert(data: unknown): data is ServerAlert {
+  const d = data as ServerAlert | null;
+  return !!d && typeof d === "object" && typeof d.id === "number" && typeof d.status === "string";
+}
+
+/** A refusal from the Setu server itself (FastAPI always sends `detail`), not from something in between. */
+function isServerRefusal(data: unknown): boolean {
+  return !!data && typeof data === "object" && "detail" in data;
+}
+
 /** Only the server's own answer moves an alert past "pending". */
 function fromServer(item: SosItem, data: ServerAlert): SosItem {
   const state: SosState =
@@ -148,20 +175,29 @@ export async function trySend(item: SosItem, store: SosStore, transport: SosTran
       place_code: item.placeCode,
       lang: item.lang,
       device: item.device,
+      // When "Send" was pressed: an alert sent later from the queue is not new.
+      created_at: item.createdAt,
     });
-    const data = ((await res.json().catch(() => null)) ?? {}) as ServerAlert;
-    if (res.status === 200 || res.status === 201) {
-      next = fromServer(next, data);
-    } else if (res.status >= 500 || res.status === 408 || res.status === 429) {
-      // Still not received: keep it pending (and say why, for 429).
-      next = { ...next, error: typeof data.detail === "string" ? data.detail : null };
+    const raw: unknown = await res.json().catch(() => null);
+    const data = (raw ?? {}) as ServerAlert;
+    const detail = typeof data.detail === "string" ? data.detail : null;
+    if ((res.status === 200 || res.status === 201) && isServerAlert(raw)) {
+      next = fromServer(next, raw);
+    } else if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429 && isServerRefusal(raw)) {
+      next = { ...next, state: "refused", error: detail ?? `Error ${res.status}` };
     } else {
-      next = { ...next, state: "refused", error: typeof data.detail === "string" ? data.detail : `Error ${res.status}` };
+      // Not received (server down, busy, or an answer that is not Setu's,
+      // e.g. a Wi-Fi login page): keep it pending and try again later.
+      next = { ...next, error: res.status === 429 ? detail : null };
     }
   } catch {
     /* no connection: stays pending */
   }
-  await store.put(next);
+  try {
+    await store.put(next);
+  } catch {
+    /* phone storage unavailable: the result is still returned to the screen */
+  }
   changed();
   return next;
 }
@@ -171,7 +207,9 @@ export async function refreshSos(item: SosItem, store: SosStore, transport: SosT
   try {
     const res = await transport.get(item.clientId);
     if (res.status !== 200) return item;
-    const next = fromServer(item, (await res.json()) as ServerAlert);
+    const data: unknown = await res.json();
+    if (!isServerAlert(data)) return item;
+    const next = fromServer(item, data);
     if (next.state !== item.state || next.ackMessage !== item.ackMessage) {
       await store.put(next);
       changed();
@@ -185,7 +223,11 @@ export async function refreshSos(item: SosItem, store: SosStore, transport: SosT
 export type NewSos = Pick<SosItem, "kind" | "note" | "lat" | "lon" | "accuracyM" | "placeCode" | "lang" | "device">;
 
 /** Save the alert on the phone (pending), then try to send it straight away. */
-export async function createSos(fields: NewSos, store: SosStore, transport: SosTransport): Promise<SosItem> {
+export async function createSos(
+  fields: NewSos,
+  store: SosStore,
+  transport: SosTransport
+): Promise<SosItem & { savedOnPhone: boolean }> {
   const item: SosItem = {
     ...fields,
     note: fields.note?.trim() || null,
@@ -194,18 +236,35 @@ export async function createSos(fields: NewSos, store: SosStore, transport: SosT
     state: "pending",
     attempts: 0,
   };
-  await store.put(item);
+  // If the phone cannot save it (private mode, storage full), send it anyway:
+  // the screen then says it cannot be followed up or retried from here.
+  let savedOnPhone = true;
+  try {
+    await store.put(item);
+  } catch {
+    savedOnPhone = false;
+  }
   changed();
-  return trySend(item, store, transport);
+  sendingNow.add(item.clientId);
+  try {
+    return { ...(await trySend(item, store, transport)), savedOnPhone };
+  } finally {
+    sendingNow.delete(item.clientId);
+  }
 }
 
-const WATCH_FOR_MS = 24 * 3600 * 1000;
+// Longer than the server's 48 h expiry (services/retention.py), so the phone
+// learns that an alert was resolved or expired.
+const WATCH_FOR_MS = 72 * 3600 * 1000;
 let flushing: Promise<void> | null = null;
+/** Alerts createSos is sending right now: a flush must not send them a second time. */
+const sendingNow = new Set<string>();
 
 /** Send pending alerts and refresh recent ones (single flight). */
 export function flushSos(store: SosStore, transport: SosTransport, now: Date = new Date()): Promise<void> {
   flushing ??= (async () => {
     for (const item of await store.list()) {
+      if (sendingNow.has(item.clientId)) continue;
       if (item.state === "pending") await trySend(item, store, transport);
       else if ((item.state === "sent" || item.state === "acknowledged") && now.getTime() - Date.parse(item.createdAt) < WATCH_FOR_MS)
         await refreshSos(item, store, transport);

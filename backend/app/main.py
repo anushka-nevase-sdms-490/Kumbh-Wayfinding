@@ -1,7 +1,10 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.middleware.gzip import GZipMiddleware
 
 from .config import production_problems, settings
@@ -60,6 +63,17 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 # Outermost: refuse oversized request bodies, also ones sent without a length.
 app.add_middleware(BodySizeLimit, max_bytes=MAX_BODY_BYTES)
+
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's 422 answer without echoing the input back: the input may be
+    NaN or Infinity (not valid JSON, so the answer itself failed with a 500),
+    and it may be personal data."""
+    errors = [{k: v for k, v in e.items() if k not in ("input", "ctx", "url")} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
 
 app.include_router(auth.router)
 app.include_router(nodes.router)

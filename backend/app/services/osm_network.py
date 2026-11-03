@@ -465,6 +465,31 @@ def _volunteer_edited(e: Edge) -> bool:
     )
 
 
+# Lane kinds the import itself writes; any other kind (wall, door, steps…) was set by a person.
+IMPORT_KINDS = {"corridor", "connector", "bridge"}
+
+
+def _reversed_spec(spec: dict) -> dict:
+    """The same lane described from its other end."""
+    out = {**spec, "from_code": spec["to_code"], "to_code": spec["from_code"],
+           "heading_ab": spec["heading_ba"], "heading_ba": spec["heading_ab"]}
+    if spec.get("path_json"):
+        out["path_json"] = json.dumps(list(reversed(json.loads(spec["path_json"]))), separators=(",", ":"))
+    return out
+
+
+def _person_fields(e: Edge) -> set[str]:
+    """Fields of an OSM lane a person changed, which a re-import must not overwrite."""
+    keep = set()
+    if e.bidirectional is False:  # a one-way crowd-control rule (the import is always two-way)
+        keep.add("bidirectional")
+    if (e.passage_kind or "corridor") not in IMPORT_KINDS:  # e.g. marked as a wall: stays closed
+        keep.add("passage_kind")
+    if e.verified:  # walked by a volunteer: keep the walked shape, length and headings
+        keep |= {"path_json", "distance_m", "heading_ab", "heading_ba", "verified"}
+    return keep
+
+
 @dataclass
 class NetworkReport:
     junctions: int = 0
@@ -566,10 +591,17 @@ def import_network(
             db.add(Edge(**spec, verification=OSM_IMPORTED))
             report.inserted += 1
             continue
-        # Keep what people set (blocked, obstacle, walkable, door, trust level).
+        # The stored lane may point the other way (sync and walks re-orient
+        # it): compare in its own direction, so a kept one-way rule or walked
+        # path is never turned around.
+        if row.from_code != spec["from_code"]:
+            spec = _reversed_spec(spec)
+        # Keep what people set (blocked, obstacle, walkable, door, trust level
+        # are not in the spec; the fields below are, so they are skipped).
+        keep = _person_fields(row)
         changed = False
         for k, v in spec.items():
-            if getattr(row, k) != v:
+            if k not in keep and getattr(row, k) != v:
                 setattr(row, k, v)
                 changed = True
         report.updated += int(changed)

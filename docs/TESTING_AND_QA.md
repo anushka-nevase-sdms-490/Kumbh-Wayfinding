@@ -9,11 +9,11 @@ on site in Nashik or on real phones in the field.**
 ```bash
 cd frontend
 npx tsc -b && npm run lint            # types; lint (0 errors, 1 old warning: an effect's deps in App.tsx)
-npm run test:routing                  # 198 checks (T1–T35): routing, guidance, offline, languages, simulation, queue, places, SOS, assistant, report helper, stale data
+npm run test:routing                  # 217 checks (T1–T39): routing, guidance, offline, languages, simulation, queue, places, SOS, assistant, report helper, stale data
 npm run build                         # production build
 
 cd ../backend
-.venv/bin/python scripts/run_api_checks.py                  # 200 API checks on a temporary SQLite database
+.venv/bin/python scripts/run_api_checks.py                  # 218 API checks on a temporary SQLite database
 SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
   .venv/bin/python scripts/run_api_checks.py                # the same on an EMPTY Postgres database
 .venv/bin/python scripts/validate_graph.py                  # data checks on the real database; must end with OK
@@ -33,15 +33,15 @@ SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
 - they were run with `HTTPS_PROXY`/`HTTP_PROXY` pointing at a dead port, and pass;
 - each run uses a fresh temporary database, never `setu_local.db`.
 
-## Results (2026-10-30)
+## Results (2026-11-03, after the code review: `CODE_REVIEW_AND_BUG_FIX_REPORT.md`)
 
 | Suite | Result |
 |---|---|
 | TypeScript (`tsc -b`) | Clean |
-| ESLint | 0 errors, 1 old warning |
-| Routing and phone logic (`test:routing`) | **198 / 198** |
-| API checks, SQLite | **200 / 200** |
-| API checks, Postgres 16 (empty database) | **ALL OK** (Phase 8 run, throwaway database) |
+| ESLint | 0 errors, 0 warnings |
+| Routing and phone logic (`test:routing`) | **217 / 217** (T36–T39 new) |
+| API checks, SQLite | **218 / 218** |
+| API checks, Postgres 16 (empty database) | **216 / 216, ALL OK** (2 dataset-build checks run on SQLite only) |
 | Browser smoke test (headless Chrome, production CSP) | **30 / 30** |
 | Migration from an old database (`check_migration.py`) | **9 / 9** |
 | Production build | OK; no simulation code; no third-party URLs |
@@ -64,10 +64,16 @@ SETU_TEST_DATABASE_URL=postgresql+psycopg2://…/empty_db \
 | T27 | Trust levels: field-verified lanes preferred, others dashed |
 | T28 | Offline storage: checksum, damaged copy rejected, old copy accepted, "storage full" in each browser's form |
 | T29 | Volunteer offline queue: kept offline, sent once in order, a walk waits for its place, refusals shown and not resent, a permanent 409 doesn't block the queue, "still saving" waits |
+| T30–T35 | Places and search, QR boards, SOS states (T32), Ask Setu (T33), report helper (T34), stale data and checks during guidance (T35) |
+| T36 | Answers that are not Setu's (a Wi-Fi login page, a proxy's 403) never count as delivered (SOS and volunteer queue); SOS still sent when phone storage fails; alerts older than 24 h still learn they expired; a removed queued change stays removed |
+| T37 | More emergency phrasings in en/hi/mr (आगीत, बुडाला, “can’t breathe”, snake bite, danger…), ordinary questions are not emergencies; report helper: ages are not times, Marathi नाव ("boat") is not a name, Devanagari digits |
+| T38 | Off the route, the new route starts within 50 m of the walker (a road junction counts), never from a place across the river |
+| T39 | The operator's quick replies are recognised and exist in Hindi and Marathi; a typed message is shown as typed |
 
 ### API checks (`backend/scripts/run_api_checks.py`)
 
-- **Sign-in:** PIN lock-out (including parallel guesses), sign-out, expired tokens.
+- **Sign-in:** PIN lock-out (including parallel guesses; a locked account answers exactly like an unknown number), sign-out, expired tokens.
+- **Code review fixes (2026-11-03):** a "bridge" label, a lane's end stretches and a recorded walk are no way past the river check; walks never reopen closed lanes; NaN/Infinity, out-of-range values and malformed lane paths are refused with 422; `OSM-…` codes are reserved; an OSM re-import keeps one-way rules, walls and walked shapes; all open SOS alerts are listed and show when "Send" was pressed.
 - **Access:** every write needs sign-in, volunteers get 403 on admin endpoints, and the full database needs sign-in.
 - **Places and lanes:** register from GPS (rough fixes refused), confirm a map place, record walks (jitter filtered, one-way respected), headings, edge status, sync.
 - **Pack:** rebuilt only on change, gzip, never a dangling lane, attribution and sources, **no volunteer timestamps or notes in the public pack**.

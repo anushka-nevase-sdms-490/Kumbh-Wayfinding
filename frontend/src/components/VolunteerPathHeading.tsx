@@ -201,7 +201,11 @@ export function VolunteerPathHeading({ apiBase, onBack, onSaved }: Props) {
           <button
             type="button"
             className="btn secondary block"
+            // No compass reading yet: the heading would be a meaningless 0° (north),
+            // and visitors' turn directions are built from it.
+            disabled={!heading.live}
             onClick={() => {
+              if (!heading.live) return;
               setCaptured(Math.round(heading.heading * 10) / 10);
               setMsg(null);
               setErr(null);

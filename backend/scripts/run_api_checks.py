@@ -77,7 +77,10 @@ with TestClient(app) as anon:
     for _ in range(3):
         login("9000000002", "111111")
     check(login("9000000002", "111111").status_code == 401, "5th wrong PIN still 401")
-    check(login("9000000002", "736251").status_code == 423, "after 5 wrong PINs the account is locked (423)")
+    locked = login("9000000002", "736251")
+    unknown = login("9999999999", "736251")
+    check(locked.status_code == 401 and locked.json() == unknown.json(),
+          "after 5 wrong PINs the account is locked — with the same answer as an unknown number (no account probing)")
     # Wrong PINs sent in parallel must not get past the 5-try limit.
     from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 
@@ -86,10 +89,24 @@ with TestClient(app) as anon:
     asha.locked_until, asha.failed_logins = None, 0
     _db.commit()
     _db.close()
+    import app.auth as _auth  # noqa: E402
+
+    _real_verify, checked = _auth.verify_pin, []
+
+    def _counting(pin, h):
+        if h == asha_hash:
+            checked.append(1)
+        return _real_verify(pin, h)
+
+    _db = _Session()
+    asha_hash = _db.query(Volunteer).filter(Volunteer.phone == "9000000002").first().pin_hash
+    _db.close()
+    _auth.verify_pin = _counting
     with ThreadPoolExecutor(max_workers=10) as pool:
         burst = list(pool.map(lambda i: login("9000000002", f"{100000 + i}").status_code, range(20)))
-    check(burst.count(401) <= 5 and burst.count(401) + burst.count(423) == 20,
-          f"20 parallel wrong PINs: at most 5 checked ({burst.count(401)} × 401, {burst.count(423)} × 423)")
+    _auth.verify_pin = _real_verify
+    check(len(checked) <= 5 and burst.count(401) == 20,
+          f"20 parallel wrong PINs: at most 5 checked against the real PIN ({len(checked)}), all refused")
     _db = _Session()
     asha = _db.query(Volunteer).filter(Volunteer.phone == "9000000002").first()
     asha.locked_until = datetime.utcnow() - timedelta(minutes=1)
@@ -344,6 +361,30 @@ with TestClient(app, headers=ADMIN) as c:
     run_network(WAYS["elements"])
     foot = next(e for e in c.get("/api/edges").json() if {e["from_code"], e["to_code"]} == {"OSM-J2", "OSM-J4"})
     check(foot["blocked"] and foot["obstacle_note"] == "barricade", "re-import keeps a volunteer's block on a map lane")
+    # Audit fix: a re-import keeps one-way rules, a "wall" and a walked shape that people set.
+    from app.db import Edge  # noqa: E402
+
+    _db = SessionLocal()
+    mg = _db.query(Edge).filter(Edge.source == "osm", Edge.name == "MG Road").first()
+    # Stored the other way round (sync and walks re-orient lanes): one-way from the map's "to" end.
+    mg.from_code, mg.to_code = mg.to_code, mg.from_code
+    mg.heading_ab, mg.heading_ba = 11.0, 191.0
+    mg.bidirectional = False
+    mg.passage_kind = "wall"
+    mg.verified = True
+    mg.path_json = json.dumps([{"lat": 1.0, "lon": 2.0}, {"lat": 1.0001, "lon": 2.0}])
+    mg_id, mg_from = mg.id, mg.from_code
+    _db.commit()
+    _db.close()
+    run_network(WAYS["elements"])
+    _db = SessionLocal()
+    mg = _db.get(Edge, mg_id)
+    check(mg is not None and mg.bidirectional is False and mg.passage_kind == "wall" and mg.verified
+          and '"lat": 1.0' in (mg.path_json or ""),
+          "re-import keeps an admin's one-way rule, a lane marked as a wall and a volunteer's walked shape")
+    check(mg is not None and mg.from_code == mg_from and mg.heading_ab == 11.0,
+          "re-import keeps the stored direction of a lane (a one-way rule is never turned around)")
+    _db.close()
 
     without_steps = [w for w in WAYS["elements"] if w["id"] != 5]
     run_network(without_steps)
@@ -528,6 +569,90 @@ with TestClient(app, headers=ADMIN) as c:
                          env={**os.environ}, capture_output=True, text=True, timeout=120)
     check(out.returncode == 0 and "1 unsafe (left out of the pack)" in out.stdout,
           f"validate_graph reports the unsafe link and passes the pack ({out.stdout.strip().splitlines()[1] if out.stdout else out.stderr[-200:]})")
+
+    # Audit fixes: a "bridge" label, end stretches and walks are no way past the river check.
+    def riv_in_pack(a, b):
+        c.post("/api/pack/build")
+        return any({e["from_code"], e["to_code"]} == {a, b} for e in c.get("/api/pack/latest/json").json()["edges"])
+
+    from app.db import Edge as _Edge  # noqa: E402
+
+    _db = _Session()
+    link = _db.query(_Edge).filter(_Edge.from_code == "RIV-P", _Edge.to_code == "RIV-S").first()
+    link.passage_kind = "bridge"  # e.g. typed in by a person, not from the OSM import
+    _db.commit()
+    link_id = link.id
+    _db.close()
+    check(not riv_in_pack("RIV-P", "RIV-S"),
+          "a lane people added across the river stays out of the pack even when labelled 'bridge'")
+    r = c.post("/api/volunteer/edge-status", json={"from_code": "RIV-P", "to_code": "RIV-S", "passage_kind": "bridge"})
+    check(r.status_code == 422, f"a volunteer cannot label a lane 'bridge' (only the OSM import does) [{r.status_code}]")
+    c.post("/api/admin/verify", json={"target": "lane", "lane_id": link_id, "status": "remotely_reviewed", "note": "checked"})
+    check(not riv_in_pack("RIV-P", "RIV-S"),
+          "an admin's trust level does not approve a straight line nobody walked across the river")
+    c.post("/api/admin/verify", json={"target": "lane", "lane_id": link_id, "status": "rejected", "note": "test done"})
+    # A path drawn on the north bank only: the stretch to the south-bank place crosses the river.
+    north = json.dumps([{"lat": 20.0102, "lon": 73.8058}, {"lat": 20.0102, "lon": 73.8031}])
+    r = c.post("/api/edges", json={"from_code": "RIV-Q", "to_code": "RIV-S", "distance_m": 300, "path_json": north})
+    check(r.status_code == 200 and not riv_in_pack("RIV-Q", "RIV-S"),
+          "a lane whose drawn end stretch crosses the river is kept out (not only its middle path)")
+    # A volunteer walk across the river (GPS gap on a bridge?) waits for an admin.
+    _db = _Session()
+    _db.add(QrNode(code="RIV-N2", name="North bank shop", lat=20.0104, lon=73.8040, node_type="landmark"))
+    _db.add(QrNode(code="RIV-S2", name="South bank shop", lat=20.0096, lon=73.8040, node_type="landmark"))
+    _db.commit()
+    _db.close()
+    r = c.post("/api/volunteer/record-path", json={"from_code": "RIV-N2", "to_code": "RIV-S2", "waypoints": [
+        {"lat": 20.0104 - i * 0.00008, "lon": 73.8040, "t_ms": i} for i in range(11)]})
+    check(r.status_code == 200 and not riv_in_pack("RIV-N2", "RIV-S2"),
+          "a recorded walk across the river stays out of the pack until an admin checks it")
+    walk_id = next(e["id"] for e in c.get("/api/edges").json() if {e["from_code"], e["to_code"]} == {"RIV-N2", "RIV-S2"})
+    c.post("/api/admin/verify", json={"target": "lane", "lane_id": walk_id, "status": "officially_verified", "note": "bridge"})
+    check(riv_in_pack("RIV-N2", "RIV-S2"), "the walk goes into the pack once an admin approved it")
+    c.post("/api/volunteer/record-path", json={"from_code": "RIV-N2", "to_code": "RIV-S2", "waypoints": [
+        {"lat": 20.0104, "lon": 73.8040, "t_ms": 0}, {"lat": 20.0096, "lon": 73.8041, "t_ms": 1}]})
+    after = next(e for e in c.get("/api/edges").json() if e["id"] == walk_id)
+    check(after["verification"] == "volunteer_verified" and not riv_in_pack("RIV-N2", "RIV-S2"),
+          "a new walk across the river takes the approval back (out of the pack until checked again)")
+    # A map bridge closed and reopened from the obstacle screen (which always sends a lane kind) stays a bridge.
+    bridge = next(e for e in c.get("/api/edges").json() if e["source"] == "osm" and e["passage_kind"] == "bridge")
+    ends = {"from_code": bridge["from_code"], "to_code": bridge["to_code"], "passage_kind": "corridor"}
+    c.post("/api/volunteer/edge-status", json={**ends, "blocked": True})
+    c.post("/api/volunteer/edge-status", json={**ends, "blocked": False})
+    again = next(e for e in c.get("/api/edges").json() if e["id"] == bridge["id"])
+    check(again["passage_kind"] == "bridge" and riv_in_pack(bridge["from_code"], bridge["to_code"]),
+          "a map bridge closed and reopened stays a bridge and back in the pack")
+    # Damaged input never reaches the pack.
+    out_of_range = [c.post("/api/nodes", json={"code": "BAD-LAT", "name": "x", "lat": 999, "lon": 73.8}).status_code,
+                    c.post("/api/edges", json={"from_code": "RIV-N2", "to_code": "RIV-Q", "distance_m": -5}).status_code,
+                    c.post("/api/edges", json={"from_code": "RIV-N2", "to_code": "RIV-Q", "distance_m": 5, "cost_mult": 0.1}).status_code]
+    check(out_of_range == [422, 422, 422], f"admin inputs out of range (lat 999, negative length, cost below 1) are refused {out_of_range}")
+    bad = c.post("/api/edges", json={"from_code": "RIV-N2", "to_code": "RIV-Q", "distance_m": 5, "path_json": "5"})
+    check(bad.status_code == 422 and c.get("/api/pack/latest/json").status_code == 200,
+          f"a lane path that is not a list of points is refused (the pack keeps working) [{bad.status_code}]")
+    nan = c.post("/api/volunteer/record-path", content='{"from_code":"RIV-N2","to_code":"RIV-Q","waypoints":'
+                 '[{"lat":NaN,"lon":73.8},{"lat":20.01,"lon":73.8}]}', headers={"Content-Type": "application/json"})
+    sos_nan = c.post("/api/sos", content='{"client_id":"nan-test-000000000001","kind":"other","lat":NaN,"lon":73.8}',
+                     headers={"Content-Type": "application/json"})
+    check(nan.status_code == 422 and sos_nan.status_code == 422,
+          f"NaN coordinates are refused with 422, not saved or a 500 [{nan.status_code}, {sos_nan.status_code}]")
+    r = c.post("/api/volunteer/register", json={"location_name": "Hidden", "local_name": "x", "code": "OSM-J123456",
+                                                     "lat": 20.02, "lon": 73.80})
+    check(r.status_code == 400, f"a volunteer cannot pick an OSM-… code (it would hide the place from admins) [{r.status_code}]")
+    # A walk sent late from the offline queue never reopens a lane closed meanwhile.
+    _db = _Session()
+    _db.add(QrNode(code="WLK-A", name="Walk A", lat=20.0300, lon=73.8000, node_type="landmark"))
+    _db.add(QrNode(code="WLK-B", name="Walk B", lat=20.0300, lon=73.8006, node_type="landmark"))
+    _db.commit()
+    _db.close()
+    c.post("/api/edges", json={"from_code": "WLK-A", "to_code": "WLK-B", "distance_m": 63})
+    c.post("/api/volunteer/edge-status", json={"from_code": "WLK-A", "to_code": "WLK-B", "blocked": True})
+    r = c.post("/api/volunteer/record-path", json={"from_code": "WLK-A", "to_code": "WLK-B", "waypoints": [
+        {"lat": 20.0300, "lon": 73.8000 + i * 0.00006, "t_ms": i} for i in range(11)]})
+    check(r.status_code == 200 and r.json().get("still_closed") is True and not riv_in_pack("WLK-A", "WLK-B"),
+          "a recorded walk does not reopen a closed lane (reopening is its own decision)")
+    c.post("/api/volunteer/edge-status", json={"from_code": "WLK-A", "to_code": "WLK-B", "blocked": False})
+    check(riv_in_pack("WLK-A", "WLK-B"), "reopening the lane explicitly puts it back in the pack")
 
 # Without water data the river checks cannot run: validation must fail, not say OK.
 _empty = os.path.join(_tmp, "osm-empty")
@@ -964,6 +1089,31 @@ with TestClient(app) as anon:
     ops = anon.get("/api/ops/sos", headers=OPER).json()
     check(ops.index(next(a for a in ops if a["flood_suspect"])) > ops.index(next(a for a in ops if not a["flood_suspect"])),
           "marked (possible flood) alerts are listed after the others, not dropped")
+    # Audit fixes: every open alert is listed (no cut at 200), and the time "Send" was pressed is kept.
+    from datetime import datetime as _dt4, timedelta as _td4
+
+    first_cid = str(_uuid())
+    asked = (_dt4.utcnow() - _td4(hours=3)).isoformat() + "Z"
+    first = anon.post("/api/sos", json={**body, "client_id": first_cid, "device": "sos-early-0004", "created_at": asked}).json()
+    future = anon.post("/api/sos", json={**body, "client_id": str(_uuid()), "device": "sos-clock-0005",
+                                         "created_at": (_dt4.utcnow() + _td4(days=1)).isoformat() + "Z"}).json()
+    ancient = anon.post("/api/sos", json={**body, "client_id": str(_uuid()), "device": "sos-clock-0006",
+                                          "created_at": "2020-01-01T00:00:00Z"}).json()
+    for i in range(220):
+        anon.post("/api/sos", json={**body, "client_id": str(_uuid()), "device": f"many-phone-{i:04d}"})
+    ops = anon.get("/api/ops/sos", headers=OPER).json()
+    mine_row = next((a for a in ops if a["id"] == first["id"]), None)
+    check(len(ops) > 220 and mine_row is not None,
+          f"all open alerts are listed: the oldest is not pushed out by 220 newer ones ({len(ops)} listed)")
+    future_row = next((a for a in ops if a["id"] == future["id"]), None)
+    ancient_row = next((a for a in ops if a["id"] == ancient["id"]), None)
+    check(mine_row is not None and (mine_row["asked_at"] or "").startswith(asked[:13])
+          and future_row is not None and future_row["asked_at"] is None
+          and ancient_row is not None and ancient_row["asked_at"] is None,
+          "an alert sent late from the phone shows when 'Send' was pressed; a clearly wrong clock (future, years back) is ignored")
+    for a in ops:  # back to a short list for the checks below
+        if a["id"] != first["id"]:
+            anon.post(f"/api/ops/sos/{a['id']}/resolve", json={}, headers=OPER)
     old_cid = str(_uuid())
     old_id = anon.post("/api/sos", json={**body, "client_id": old_cid, "device": "sos-old-0003"}).json()["id"]
     from app.db import SessionLocal as _S3, SosAlert as _SA3

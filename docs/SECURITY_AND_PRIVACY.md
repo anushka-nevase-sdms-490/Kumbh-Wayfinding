@@ -35,7 +35,7 @@ The checks confirm that:
 - **PINs:** stored as scrypt hashes (N=2¹⁴, r=8, p=1, 16-byte salt), compared in constant time. An unknown phone number is checked against a dummy hash, so the response time doesn't reveal which numbers exist. Easy PINs (000000, 123456, all one digit…) are refused when set.
 - **Lock-out:** after 5 wrong PINs the account is locked for 15 minutes. The counter is updated atomically, so parallel guesses can't get past it.
 - **Per network address (Phase 8):** after 30 failed sign-ins from one address in 15 minutes, further attempts from it get 429 until the window passes. This stops one device trying a few PINs on many phone numbers (which the per-account lock-out alone doesn't). Only failures count; addresses are stored as a keyed hash and deleted after a day (`login_failures`). Production trusts the forwarded address from Caddy only (`FORWARDED_ALLOW_IPS`), so the limit sees the real phone's address. **Trade-off:** volunteers behind one carrier address share the 30; at shift start with hundreds of volunteers that is still well above normal typing mistakes, but watch it in the pilot.
-  - The "locked" answer (423) does reveal that the number has an account. That is acceptable for staff numbers, but noted.
+  - **Since the code review (2026-11-03)** a locked account gets exactly the same answer as an unknown number or a wrong PIN (401, same text, same timing), so the answer no longer reveals which numbers are staff accounts. Anyone can still pause an account for 15 minutes with 5 wrong PINs (a lock-out trade-off; `manage_volunteers.py enable` lifts it).
 - **Tokens:** 32 random bytes, of which only the SHA-256 hash is stored. They last one shift (16 h). Sign-out revokes the token, and disabling a volunteer revokes all of theirs.
 - **On the phone:** the token is kept in `localStorage`. The production CSP allows scripts from this site only, which limits the damage an injected script could do; React escapes all text, and nothing is rendered as raw HTML.
 - **Accounts:** made only with `scripts/manage_volunteers.py`; the PIN is typed in, never put on the command line. There is no self-sign-up, and **no test or demo accounts** exist in production; the checks create theirs in a temporary database.
@@ -148,6 +148,22 @@ A code review by the developer and the project's supervisor agent, **not a profe
 | Dependencies | `npm audit --omit=dev`: **0**; dev tools: 8 advisories (Vite 5 dev server); Python: `pip-audit` (below) | See next section |
 
 The privacy and DPDP checklist is in [PRIVACY_DPDP_CHECKLIST.md](PRIVACY_DPDP_CHECKLIST.md). **Nothing in it is a claim of legal compliance**; it needs a lawyer's review.
+
+## Code review (2026-11-03)
+
+Security-relevant fixes from [CODE_REVIEW_AND_BUG_FIX_REPORT.md](CODE_REVIEW_AND_BUG_FIX_REPORT.md):
+
+| Finding | Fix |
+|---|---|
+| A volunteer could label a lane "bridge" and get it past the river check | "Bridge" counts only from the OSM import; volunteer lane kinds are a fixed list; other lanes over water stay out, except a recorded walk an admin approved (a new walk across water takes the approval back) |
+| NaN / Infinity passed range checks (a NaN in the pack makes it unreadable on every phone); a rejected NaN caused a 500 | All schemas refuse NaN/Infinity; ranges on walk points, heading, clearance, admin coordinates, lane length and cost; the 422 answer no longer echoes the input |
+| A malformed lane path broke the pack for everyone | Paths must be a list of `{lat, lon}`; the pack builder tolerates damaged stored paths |
+| A volunteer could create a place hidden from admins (code `OSM-J…`) | `OSM-…` codes are reserved for the map import |
+| The "locked" answer revealed staff numbers | One answer for unknown / wrong / locked |
+| The operator SOS list stopped at 200 (a flood could hide real alerts) | All open alerts listed; possible floods last |
+| An SOS or a volunteer change counted as delivered on a Wi-Fi login page | Only a real Setu answer counts |
+
+Checked and found correct: tokens (hashed, expiry, revocation), role checks on every endpoint (API level), SQLAlchemy bound parameters (no SQL built from input), no raw HTML rendering, no cookies (no CSRF surface), CORS without credentials, Caddy replacing client-sent `X-Forwarded-For`, `.env` and databases excluded from Docker images. **Not done:** a professional penetration test.
 
 ## Dependencies
 

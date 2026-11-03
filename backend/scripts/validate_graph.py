@@ -59,7 +59,7 @@ def main() -> int:
     if r["pack_unsafe_lanes"]:
         print(f"FAIL: {len(r['pack_unsafe_lanes'])} lanes in the pack cross water unsafely")
         return 1
-    print("OK: no lane in the pack crosses a river or weir except on a bridge or a recorded walk")
+    print("OK: no lane in the pack crosses water except on an approved bridge")
     return 0
 
 

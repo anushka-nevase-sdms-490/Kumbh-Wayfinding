@@ -59,6 +59,8 @@ export function VolunteerLogin({ apiBase, onSignedIn, onBack, overlay = false }:
             type="tel"
             inputMode="tel"
             autoComplete="username"
+            // Opened over a form (signed out mid-task): focus moves into the dialog.
+            autoFocus={overlay}
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             placeholder="98765 43210"
@@ -79,7 +81,11 @@ export function VolunteerLogin({ apiBase, onSignedIn, onBack, overlay = false }:
             required
           />
         </label>
-        {err && <p className="gps-status err">{err}</p>}
+        {err && (
+          <p className="gps-status err" role="alert">
+            {err}
+          </p>
+        )}
         <button type="submit" className="btn primary block" disabled={busy}>
           {busy ? t("vol.login.signingIn") : t("vol.login.signIn")}
         </button>
@@ -88,5 +94,5 @@ export function VolunteerLogin({ apiBase, onSignedIn, onBack, overlay = false }:
     </section>
   );
 
-  return overlay ? <div className="login-overlay" role="dialog" aria-modal="true">{body}</div> : body;
+  return overlay ? <div className="login-overlay" role="dialog" aria-modal="true" aria-label={t("vol.login.title")}>{body}</div> : body;
 }
